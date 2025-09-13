@@ -10,6 +10,7 @@
 #include "Utilities/safe_ptr.h"
 #include "Utilities/SimpleLock.h"
 #include "Utilities/VirtualFile.h"
+#include <thread>
 
 class Debugger;
 class DebugHud;
@@ -61,7 +62,7 @@ private:
 	friend class DebuggerRequest;
 	friend class EmulatorLock;
 
-	unique_ptr<thread> _emuThread;
+   unique_ptr<std::thread> _emuThread;
 	unique_ptr<AudioPlayerHud> _audioPlayerHud;
 	safe_ptr<IConsole> _console;
 
@@ -86,8 +87,8 @@ private:
 	const shared_ptr<GameClient> _gameClient;
 	const shared_ptr<RewindManager> _rewindManager;
 
-	thread_local static thread::id _currentThreadId;
-	thread::id _emulationThreadId;
+   thread_local static std::thread::id _currentThreadId;
+   std::thread::id _emulationThreadId;
 
 	atomic<uint32_t> _lockCounter;
 	SimpleLock _runLock;
@@ -220,7 +221,7 @@ public:
 	bool IsDebugging() { return !!_debugger; }
 	Debugger* InternalGetDebugger() { return _debugger.get(); }
 
-	thread::id GetEmulationThreadId() { return _emulationThreadId; }
+   std::thread::id GetEmulationThreadId() { return _emulationThreadId; }
 	bool IsEmulationThread();
 
 	int32_t GetStopCode() { return _stopCode; }
