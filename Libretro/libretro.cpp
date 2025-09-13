@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include <string>
+#include <cstdlib>
 #include <sstream>
 #include <algorithm>
 #include <fstream>
@@ -8,9 +9,14 @@
 #include "LibretroKeyManager.h"
 #include "LibretroMessageManager.h"
 #include "libretro.h"
+#include "../Core/Shared/Audio/SoundMixer.h"
+
+
 #include "../Core/NES/NesConsole.h"
 #include "../Core/Shared/Video/VideoDecoder.h"
+#include "../Core/Shared/Video/BaseVideoFilter.h"
 #include "../Core/Shared/Video/VideoRenderer.h"
+#include "../Core/Shared/ColorUtilities.h"
 #include "../Core/NES/NesMemoryManager.h"
 #include "../Core/NES/BaseMapper.h"
 #include "../Core/Shared/EmuSettings.h"
@@ -20,6 +26,7 @@
 #include "../Core/Debugger/DebugTypes.h"
 #include "../Core/NES/GameDatabase.h"
 #include "../Core/NES/NesSoundMixer.h"
+#include "../Core/Shared/Interfaces/IAudioDevice.h"
 #include "../Utilities/FolderUtilities.h"
 #include "../Utilities/HexUtilities.h"
 #include "../Utilities/VirtualFile.h"
@@ -59,10 +66,13 @@ static int32_t _audioSampleRate = 48000;
 static std::unique_ptr<Emulator> _emu;
 // shared_ptr to the concrete NesConsole (may be null until emulator initialized)
 static std::shared_ptr<NesConsole> _console;
-static std::unique_ptr<LibretroKeyManager> _keyManager;
+static std::shared_ptr<LibretroKeyManager> _keyManager;
 static std::unique_ptr<LibretroMessageManager> _message_manager;
 static retro_audio_sample_batch_t _audioSampleBatch = nullptr;
 static retro_video_refresh_t _videoRefresh = nullptr;
+// Saved input callbacks (set by frontend before core may be ready)
+static retro_input_state_t _savedGetInputState = nullptr;
+static retro_input_poll_t _savedPollInput = nullptr;
 // Store user palette locally until renderer API is wired
 static std::vector<uint32_t> _userRgbPalette;
 // keep selected filter string until we map to EmuSettings
@@ -78,6 +88,90 @@ static std::string _selectedRegion;
 static std::string _selectedRamState;
 // new local stub for screen rotation
 static int _screenRotation = 0;
+
+// Small audio device implementation that forwards audio from the core's
+// SoundMixer to libretro's audio callback (_audioSampleBatch).
+class LibretroAudioDevice : public IAudioDevice {
+public:
+	LibretroAudioDevice() {}
+	~LibretroAudioDevice() override {}
+
+	void PlayBuffer(int16_t *soundBuffer, uint32_t bufferSize, uint32_t sampleRate, bool isStereo) override {
+		// bufferSize is number of frames. _audioSampleBatch expects interleaved int16_t samples and frame count.
+		if(!_audioSampleBatch) return;
+
+		// Optional audio debug: if MESEN_LIBRETRO_AUDIO_DEBUG is set to an integer
+		// value N, print a diagnostic every N calls to help verify audio frames
+		// reach the libretro callback and what it returns. Default is disabled.
+		const char* audioDebug = getenv("MESEN_LIBRETRO_AUDIO_DEBUG");
+		int debugInterval = audioDebug ? atoi(audioDebug) : 0;
+		static uint64_t audioCallCounter = 0;
+		audioCallCounter++;
+
+		// Choose output buffer pointer and sample count (interleaved samples)
+		const int16_t* outPtr = nullptr;
+		size_t outSamples = 0; // number of int16_t samples (not frames)
+		if(isStereo) {
+			outPtr = soundBuffer;
+			outSamples = (size_t)bufferSize * 2;
+		} else {
+			// Convert mono -> stereo by duplicating samples into a temporary buffer
+			_monoBuffer.resize(bufferSize * 2);
+			for(uint32_t i = 0; i < bufferSize; ++i) {
+				int16_t s = soundBuffer[i];
+				_monoBuffer[i * 2 + 0] = s;
+				_monoBuffer[i * 2 + 1] = s;
+			}
+			outPtr = _monoBuffer.data();
+			outSamples = (size_t)bufferSize * 2;
+		}
+
+		// Forward frames (bufferSize is frame count)
+		size_t ret = _audioSampleBatch((const int16_t*)outPtr, (size_t)bufferSize);
+
+		if(debugInterval > 0 && (audioCallCounter % (uint64_t)debugInterval) == 0) {
+			// Lightweight diagnostics: check for silent buffer and print sample snapshots
+			bool allZero = true;
+			int16_t maxAbs = 0;
+			size_t toScan = outSamples;
+			for(size_t i = 0; i < toScan; ++i) {
+				int16_t v = outPtr[i];
+				if(v != 0) allZero = false;
+				int16_t absV = (v == INT16_MIN) ? INT16_MAX : (v < 0 ? -v : v);
+				if(absV > maxAbs) maxAbs = absV;
+			}
+
+			// print first/last up to 4 samples
+			auto printSamples = [&](const int16_t* p, size_t count, const char* label) {
+				size_t n = std::min<size_t>(4, count);
+				fprintf(stderr, "[libretro] Audio debug: %s samples:", label);
+				for(size_t i = 0; i < n; ++i) fprintf(stderr, " %d", (int)p[i]);
+				if(count > n) fprintf(stderr, " ...");
+				fprintf(stderr, "\n");
+			};
+
+			size_t frameCount = (size_t)bufferSize;
+			fprintf(stderr, "[libretro] Audio debug: frames=%zu sampleRate=%u stereo=%d ret=%zu allZero=%d maxAbs=%d\n",
+				frameCount, (unsigned)sampleRate, (int)isStereo, ret, (int)allZero, (int)maxAbs);
+			printSamples(outPtr, outSamples, "first");
+			if(outSamples > 4) printSamples(outPtr + (outSamples > 4 ? outSamples - 4 : 0), outSamples, "last");
+		}
+	}
+
+	void Stop() override {}
+	void Pause() override {}
+	void ProcessEndOfFrame() override {}
+
+	string GetAvailableDevices() override { return string(); }
+	void SetAudioDevice(string deviceName) override { (void)deviceName; }
+	AudioStatistics GetStatistics() override { return AudioStatistics(); }
+
+private:
+	// reused buffer for mono->stereo conversion
+	std::vector<int16_t> _monoBuffer;
+};
+
+static std::unique_ptr<LibretroAudioDevice> _audioDevice;
 
 static constexpr const char* MesenNtscFilter = "mesen_ntsc_filter";
 static constexpr const char* MesenPalette = "mesen_palette";
@@ -140,12 +234,23 @@ extern "C" {
 		_emu.reset(new Emulator());
 		_emu->Initialize(); // sets up settings, video/audio subsystems, etc.
 
+		// Provide the global KeyManager with the emulator settings so calls like
+		// KeyManager::SetForceFeedback can safely read configuration values.
+		KeyManager::SetSettings(_emu->GetSettings());
+
 		// Grab the IConsole instance and dynamic_cast to NesConsole when needed
 		auto consoleIf = _emu->GetConsole(); // shared_ptr<IConsole>
 		_console = std::dynamic_pointer_cast<NesConsole>(consoleIf);
 
-		// Key manager accepts the IConsole shared_ptr returned by the emulator
-		_keyManager.reset(new LibretroKeyManager(consoleIf));
+	// Key manager accepts the IConsole shared_ptr returned by the emulator
+	// and also needs a pointer to the Emulator for mouse positioning.
+	_keyManager = std::make_shared<LibretroKeyManager>(consoleIf, _emu.get());
+
+	// Forward any previously saved input callbacks into the key manager and register it
+	if(_savedGetInputState) _keyManager->SetGetInputState(_savedGetInputState);
+	if(_savedPollInput) _keyManager->SetPollInput(_savedPollInput);
+	// KeyManager now expects a shared_ptr<IKeyManager> for thread-safe registration
+	KeyManager::RegisterKeyManager(std::shared_ptr<IKeyManager>(_keyManager));
 		_message_manager.reset(new LibretroMessageManager(logCallback, env_cb));
 
 		std::stringstream databaseData;
@@ -156,6 +261,9 @@ extern "C" {
 		AudioConfig ac = _emu->GetSettings()->GetAudioConfig();
 		ac.SampleRate = _audioSampleRate;
 		_emu->GetSettings()->SetAudioConfig(ac);
+
+		// Create libretro audio device so we can register it later once a ROM is loaded
+		_audioDevice.reset(new LibretroAudioDevice());
 
 		// NOTE: many NES-specific flags moved into NesConfig inside EmuSettings.
 		// Example: to set FDS auto-load you'd edit NesConfig and call SetNesConfig.
@@ -168,15 +276,30 @@ extern "C" {
 	RETRO_API void retro_deinit()
 	{
 		if(_keyManager) _keyManager->SetSupportsInputBitmasks(false);
+	// Unregister the key manager from the global KeyManager to avoid a
+	// dangling pointer during emulator shutdown. KeyManager::RegisterKeyManager
+	// accepts an empty shared_ptr to clear the registered backend.
+	KeyManager::RegisterKeyManager(std::shared_ptr<IKeyManager>());
 		_keyManager.reset();
 		_message_manager.reset();
 
 		// Properly shut down the emulator instance
 		if(_emu) {
+			// Unregister libretro audio device before releasing the emulator
+			if(_audioDevice) {
+				_emu->GetSoundMixer()->RegisterAudioDevice(nullptr);
+				_audioDevice.reset();
+			}
+
+			// Make sure KeyManager is unregistered before calling Release()
+			// (do nothing here because we already unregistered above)
 			_emu->Release();
 			_emu.reset();
 		}
 		_console.reset();
+		// Now that the emulator instance has been released, clear the settings
+		// pointer stored in the global KeyManager to avoid dangling references.
+		KeyManager::SetSettings(nullptr);
 	}
 
 	RETRO_API void retro_set_environment(retro_environment_t env)
@@ -305,13 +428,53 @@ extern "C" {
 
 	RETRO_API void retro_set_input_poll(retro_input_poll_t pollInput)
 	{	
-		_keyManager->SetPollInput(pollInput);
+		// store the callback for later use and forward to key manager if it's active
+		_savedPollInput = pollInput;
+		if(_keyManager) _keyManager->SetPollInput(pollInput);
+
+		// Probe input callbacks immediately from the thread that set them to
+		// help debug frontend timing/order issues. This is noisy by default so
+		// gate it behind an environment variable (MESEN_LIBRETRO_VERBOSE_INPUT).
+		if((pollInput || _savedGetInputState) && getenv("MESEN_LIBRETRO_VERBOSE_INPUT")) {
+			fprintf(stderr, "[libretro] Diagnostic (setter): probing input callbacks after SetPollInput\n");
+			extern void libretro_probe_inputs(const char*);
+			libretro_probe_inputs("setter_poll");
+		}
 	}
 
 	RETRO_API void retro_set_input_state(retro_input_state_t getInputState)
 	{
-		_keyManager->SetGetInputState(getInputState);
+		_savedGetInputState = getInputState;
+		if(_keyManager) _keyManager->SetGetInputState(getInputState);
+
+		if((getInputState || _savedPollInput) && getenv("MESEN_LIBRETRO_VERBOSE_INPUT")) {
+			fprintf(stderr, "[libretro] Diagnostic (setter): probing input callbacks after SetGetInputState\n");
+			extern void libretro_probe_inputs(const char*);
+			libretro_probe_inputs("setter_getstate");
+		}
 	}
+
+// Shared diagnostic probe called from multiple places to exercise the saved
+// input callbacks and print their results. The argument is a short tag
+// describing the caller (for log clarity).
+void libretro_probe_inputs(const char* tag)
+{
+	if(!env_cb) return;
+	fprintf(stderr, "[libretro] Diagnostic(%s): probe start\n", tag);
+	if(_savedPollInput) {
+		try { _savedPollInput(); fprintf(stderr, "[libretro] Diagnostic(%s): poll() ok\n", tag); } catch(...) { fprintf(stderr, "[libretro] Diagnostic(%s): poll() threw\n", tag); }
+	}
+	// Query bitmask capability but avoid calling the frontend get_state callback here.
+	// Some libretro frontends crash if get_state is invoked outside their expected
+	// input polling context (we observed a segmentation fault). To be safe, only
+	// log availability and defer actual get_state calls to the normal per-frame
+	// RefreshState path which runs on the emulator/main thread.
+	bool bitmasks = false;
+	if (env_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL)) bitmasks = true;
+	fprintf(stderr, "[libretro] Diagnostic(%s): supports bitmasks=%d\n", tag, (int)bitmasks);
+	fprintf(stderr, "[libretro] Diagnostic(%s): skipping direct get_state() calls to avoid host crashes\n", tag);
+	fprintf(stderr, "[libretro] Diagnostic(%s): probe end\n", tag);
+}
 
 	RETRO_API void retro_reset()
 	{
@@ -474,6 +637,24 @@ extern "C" {
 				//Using the raw palette replaces the NTSC filters, if one is selected
             _videoFilterRaw = true;
 			}
+		}
+
+		// Propagate the selected/user palette into the emulator's NesConfig so
+		// the video filters have a valid palette to build their lookup tables.
+		// If we only have 64 entries use the standard 64-entry palette mode;
+		// if we have 512 entries treat it as a full-color palette.
+		{
+			NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+			if(_userRgbPalette.size() >= 512) {
+				// copy up to 512 entries
+				for(size_t i = 0; i < 512; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
+				nesCfg.IsFullColorPalette = true;
+			} else {
+				// copy 64-entry palette
+				for(size_t i = 0; i < 64; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
+				nesCfg.IsFullColorPalette = false;
+			}
+			_emu->GetSettings()->SetNesConfig(nesCfg);
 		}
 
 		bool beforeNmi = true;
@@ -640,23 +821,15 @@ extern "C" {
 			return (port << 8) | (retroKey + 1);
 		};
 
-/*		auto getKeyBindings = [=](int port) {
+		auto getKeyBindings = [=](int port) {
 			KeyMappingSet keyMappings;
 			keyMappings.TurboSpeed = turboSpeed;
-			if(_emu->GetSettings()->GetControllerType(port) == ControllerType::SnesController) {
-				keyMappings.Mapping1.LButton = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_L);
-				keyMappings.Mapping1.RButton = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_R);
-				keyMappings.Mapping1.A = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_A);
-				keyMappings.Mapping1.B = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_B);
-				keyMappings.Mapping1.TurboA = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_X);
-				keyMappings.Mapping1.TurboB = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_Y);
-			} else {
-				keyMappings.Mapping1.A = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_B : RETRO_DEVICE_ID_JOYPAD_A);
-				keyMappings.Mapping1.B = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_Y : RETRO_DEVICE_ID_JOYPAD_B);
-				if(turboEnabled) {
-					keyMappings.Mapping1.TurboA = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_A : RETRO_DEVICE_ID_JOYPAD_X);
-					keyMappings.Mapping1.TurboB = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_X : RETRO_DEVICE_ID_JOYPAD_Y);
-				}
+			// Default NES-style mapping: A/B/start/select/dpad and optional turbo buttons
+			keyMappings.Mapping1.A = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_B : RETRO_DEVICE_ID_JOYPAD_A);
+			keyMappings.Mapping1.B = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_Y : RETRO_DEVICE_ID_JOYPAD_B);
+			if(turboEnabled) {
+				keyMappings.Mapping1.TurboA = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_A : RETRO_DEVICE_ID_JOYPAD_X);
+				keyMappings.Mapping1.TurboB = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_X : RETRO_DEVICE_ID_JOYPAD_Y);
 			}
 
 			keyMappings.Mapping1.Start = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_START);
@@ -667,66 +840,22 @@ extern "C" {
 			keyMappings.Mapping1.Left = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_LEFT);
 			keyMappings.Mapping1.Right = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_RIGHT);
 
-			if(port == 0) {
-				keyMappings.Mapping1.PartyTapButtons[0] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_B);
-				keyMappings.Mapping1.PartyTapButtons[1] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_A);
-				keyMappings.Mapping1.PartyTapButtons[2] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_Y);
-				keyMappings.Mapping1.PartyTapButtons[3] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_X);
-				keyMappings.Mapping1.PartyTapButtons[4] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_L);
-				keyMappings.Mapping1.PartyTapButtons[5] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_R);
-
-				unsigned powerPadPort = 0;
-				if(_emu->GetSettings()->GetExpansionDevice() == ExpansionPortDevice::FamilyTrainerMat) {
-					powerPadPort = 4;
-				}
-
-				keyMappings.Mapping1.PowerPadButtons[0] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_B);
-				keyMappings.Mapping1.PowerPadButtons[1] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_A);
-				keyMappings.Mapping1.PowerPadButtons[2] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_Y);
-				keyMappings.Mapping1.PowerPadButtons[3] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_X);
-				keyMappings.Mapping1.PowerPadButtons[4] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_L);
-				keyMappings.Mapping1.PowerPadButtons[5] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_R);
-				keyMappings.Mapping1.PowerPadButtons[6] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_LEFT);
-				keyMappings.Mapping1.PowerPadButtons[7] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_RIGHT);
-				keyMappings.Mapping1.PowerPadButtons[8] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_UP);
-				keyMappings.Mapping1.PowerPadButtons[9] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_DOWN);
-				keyMappings.Mapping1.PowerPadButtons[10] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_SELECT);
-				keyMappings.Mapping1.PowerPadButtons[11] = getKeyCode(powerPadPort, RETRO_DEVICE_ID_JOYPAD_START);
-
-				keyMappings.Mapping1.PachinkoButtons[0] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_R);
-				keyMappings.Mapping1.PachinkoButtons[1] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_L);
-
-				keyMappings.Mapping1.ExcitingBoxingButtons[0] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_B); //left hook
-				keyMappings.Mapping1.ExcitingBoxingButtons[1] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_RIGHT); //move right
-				keyMappings.Mapping1.ExcitingBoxingButtons[2] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_LEFT); //move left
-				keyMappings.Mapping1.ExcitingBoxingButtons[3] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_A); //right hook
-				keyMappings.Mapping1.ExcitingBoxingButtons[4] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_Y); //left jab
-				keyMappings.Mapping1.ExcitingBoxingButtons[5] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_L); //body
-				keyMappings.Mapping1.ExcitingBoxingButtons[6] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_X); //right jab
-				keyMappings.Mapping1.ExcitingBoxingButtons[7] = getKeyCode(4, RETRO_DEVICE_ID_JOYPAD_R); //straight
-			} else if(port == 1) {
-				keyMappings.Mapping1.Microphone = getKeyCode(0, RETRO_DEVICE_ID_JOYPAD_L3);
-				keyMappings.Mapping1.PowerPadButtons[0] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_B);
-				keyMappings.Mapping1.PowerPadButtons[1] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_A);
-				keyMappings.Mapping1.PowerPadButtons[2] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_Y);
-				keyMappings.Mapping1.PowerPadButtons[3] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_X);
-				keyMappings.Mapping1.PowerPadButtons[4] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_L);
-				keyMappings.Mapping1.PowerPadButtons[5] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_R);
-				keyMappings.Mapping1.PowerPadButtons[6] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_LEFT);
-				keyMappings.Mapping1.PowerPadButtons[7] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_RIGHT);
-				keyMappings.Mapping1.PowerPadButtons[8] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_UP);
-				keyMappings.Mapping1.PowerPadButtons[9] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_DOWN);
-				keyMappings.Mapping1.PowerPadButtons[10] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_SELECT);
-				keyMappings.Mapping1.PowerPadButtons[11] = getKeyCode(1, RETRO_DEVICE_ID_JOYPAD_START);
-			}
+			// No special per-device arrays in the current KeyMapping struct; only populate core buttons
 			return keyMappings;
 		};
 
-		_emu->GetSettings()->SetControllerKeys(0, getKeyBindings(0));
-		_emu->GetSettings()->SetControllerKeys(1, getKeyBindings(1));
-		_emu->GetSettings()->SetControllerKeys(2, getKeyBindings(2));
-		_emu->GetSettings()->SetControllerKeys(3, getKeyBindings(3));
-*/
+		// Write the computed key mappings into the NesConfig so the core's control devices
+		// can query KeyManager::IsKeyPressed((port<<8)|(retroKey+1)).
+		NesConfig cfg = _emu->GetSettings()->GetNesConfig();
+		cfg.Port1.Keys = getKeyBindings(0);
+		cfg.Port2.Keys = getKeyBindings(1);
+		// Map subports/extra ports to the same base bindings where appropriate
+		cfg.Port1SubPorts[0].Keys = getKeyBindings(0);
+		cfg.Port1SubPorts[1].Keys = getKeyBindings(1);
+		cfg.Port1SubPorts[2].Keys = getKeyBindings(2);
+		cfg.Port1SubPorts[3].Keys = getKeyBindings(3);
+		cfg.ExpPort.Keys = getKeyBindings(4);
+		_emu->GetSettings()->SetNesConfig(cfg);
 		// Controller key mapping API changed. Skip populating controller key maps here.
 		// TODO: re-map controller keys using new KeyMapping/ControllerType API.
 
@@ -764,7 +893,81 @@ retro_system_av_info avInfo = {};
 			}
 		}
 
-		// Frame stepping is handled by the emulator core. No-op here; wire to _emu stepping when API known.
+		// Frame stepping: run a single emulated frame and submit video/audio to libretro callbacks.
+		if(_emu && _emu->GetConsole()) {
+			// Run one frame
+			auto consoleIf = _emu->GetConsole();
+			consoleIf->RunFrame();
+			// Allow emulator to run pre-frame hooks (UI, stats, etc.)
+			_emu->OnBeforeSendFrame();
+
+			// Get the PPU frame (core provides a 16-bit PPU buffer containing
+			// palette indices/intensity bits). Use the emulator's video filter
+			// to convert that buffer to a 32-bit ARGB frame so color/palette
+			// handling (including emphasis, user palettes, and filters) is
+			// consistent with the rest of the emulator.
+			PpuFrameInfo frame = _emu->GetPpuFrame();
+			if(_videoRefresh && frame.FrameBuffer && frame.FrameBufferSize >= (frame.Width * frame.Height * sizeof(uint16_t))) {
+				// Create a temporary video filter (same pattern used by LuaApi)
+				std::unique_ptr<BaseVideoFilter> filter(_emu->GetVideoFilter());
+				FrameInfo baseSize = { frame.Width, frame.Height };
+				filter->SetBaseFrameInfo(baseSize);
+				FrameInfo outInfo = filter->SendFrame((uint16_t*)frame.FrameBuffer, _emu->GetFrameCount(), _emu->GetFrameCount() & 0x01, nullptr, false);
+
+				uint32_t* src = filter->GetOutputBuffer();
+				// Debugging helpers -- commented out to reduce noise. Uncomment if needed.
+				/*
+				if(src) {
+					fprintf(stderr, "[libretro] video filter outInfo %u x %u, first pixels: %08x %08x %08x %08x\n",
+						(unsigned)outInfo.Width, (unsigned)outInfo.Height,
+						(unsigned)src[0], (unsigned)src[1], (unsigned)src[2], (unsigned)src[3]);
+				} else {
+					fprintf(stderr, "[libretro] video filter produced null output buffer\n");
+				}
+				*/
+				size_t pixels = (size_t)outInfo.Width * (size_t)outInfo.Height;
+
+				static std::vector<uint32_t> rotBuffer;
+
+				if(_screenRotation == 0) {
+					_videoRefresh(src, outInfo.Width, outInfo.Height, outInfo.Width * 4);
+				} else {
+					int outW = (_screenRotation == 180) ? outInfo.Width : outInfo.Height;
+					int outH = (_screenRotation == 180) ? outInfo.Height : outInfo.Width;
+					rotBuffer.resize((size_t)outW * (size_t)outH);
+
+					if(_screenRotation == 180) {
+						for(size_t i = 0; i < pixels; ++i) rotBuffer[pixels - 1 - i] = src[i];
+						_videoRefresh(rotBuffer.data(), outInfo.Width, outInfo.Height, outInfo.Width * 4);
+					} else if(_screenRotation == 90) {
+						for(int y = 0; y < outInfo.Height; ++y) {
+							for(int x = 0; x < outInfo.Width; ++x) {
+								size_t srcIdx = (size_t)y * outInfo.Width + x;
+								int dstX = outInfo.Height - 1 - y;
+								int dstY = x;
+								size_t dstIdx = (size_t)dstY * outW + (size_t)dstX;
+								rotBuffer[dstIdx] = src[srcIdx];
+							}
+						}
+						_videoRefresh(rotBuffer.data(), outW, outH, outW * 4);
+					} else if(_screenRotation == 270) {
+						for(int y = 0; y < outInfo.Height; ++y) {
+							for(int x = 0; x < outInfo.Width; ++x) {
+								size_t srcIdx = (size_t)y * outInfo.Width + x;
+								int dstX = y;
+								int dstY = outInfo.Width - 1 - x;
+								size_t dstIdx = (size_t)dstY * outW + (size_t)dstX;
+								rotBuffer[dstIdx] = src[srcIdx];
+							}
+						}
+						_videoRefresh(rotBuffer.data(), outW, outH, outW * 4);
+					} else {
+						// Unknown rotation: fallback to non-rotated output
+						_videoRefresh(src, outInfo.Width, outInfo.Height, outInfo.Width * 4);
+					}
+				}
+			}
+		}
 
 		if(updated) {
 			//Update geometry after running the frame, in case the emulator's region changed
@@ -783,16 +986,30 @@ retro_system_av_info avInfo = {};
 
 	RETRO_API bool retro_serialize(void *data, size_t size)
 	{
-		// Save/load API moved; serialization not implemented in this shim.
-		(void)data; (void)size;
-		return false;
+		if(!_emu) return false;
+		try {
+			std::stringstream ss;
+			_emu->Serialize(ss, true, 1);
+			std::string out = ss.str();
+			if(out.size() > size) return false;
+			memcpy(data, out.data(), out.size());
+			return true;
+		} catch(...) {
+			return false;
+		}
 	}
 
 	RETRO_API bool retro_unserialize(const void *data, size_t size)
 	{
-		// Unserialization not implemented in this shim.
-		(void)data; (void)size;
-		return false;
+		if(!_emu) return false;
+		try {
+			std::string in((const char*)data, size);
+			std::stringstream ss(in);
+			auto res = _emu->Deserialize(ss, SaveStateManager::FileFormatVersion, true);
+			return (res == DeserializeResult::Success);
+		} catch(...) {
+			return false;
+		}
 	}
 
 	RETRO_API void retro_cheat_reset()
@@ -1043,21 +1260,99 @@ retro_system_av_info avInfo = {};
 		retro_input_descriptor end = { 0 };
 		desc.push_back(end);
 
+	// Avoid sending identical input descriptors repeatedly (RetroArch logs each SET_INPUT_DESCRIPTORS call).
+	// Build a lightweight representation we can compare to the last one and skip the env_cb if unchanged.
+	struct SimpleDesc { unsigned port; unsigned device; unsigned index; unsigned id; std::string name; };
+	static std::vector<SimpleDesc> lastDesc;
+	std::vector<SimpleDesc> curDesc;
+	curDesc.reserve(desc.size());
+	for(size_t i = 0; i < desc.size(); ++i) {
+		const retro_input_descriptor &d = desc[i];
+		if(d.description == nullptr) break; // end sentinel
+		curDesc.push_back({ d.port, d.device, d.index, d.id, std::string(d.description) });
+	}
+
+	bool same = (curDesc.size() == lastDesc.size());
+	if(same) {
+		for(size_t i = 0; i < curDesc.size(); ++i) {
+			const SimpleDesc &a = curDesc[i];
+			const SimpleDesc &b = lastDesc[i];
+			if(a.port != b.port || a.device != b.device || a.index != b.index || a.id != b.id || a.name != b.name) { same = false; break; }
+		}
+	}
+
+	if(!same) {
 		env_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc.data());
+		lastDesc.swap(curDesc);
+	}
 	}
 
 	void update_core_controllers()
 	{
-		// The engine's input/console APIs were refactored. For now, keep a minimal, safe stub:
-		// - Ensure ports 0/1 default to gamepads when still "auto"
-		// - Leave ports 2..4 as-is (frontends can change via retro_set_controller_port_device)
-		// Full mapping to Emulator/EmuSettings should be added once the new APIs are available.
+		// Map libretro-selected devices into the emulator's settings.
+		// Guard against being called before a console exists.
+		if(!_console) return;
+
+		// Ensure ports 0/1 default to gamepads when still "auto"
 		if(_inputDevices[0] == DEVICE_AUTO) _inputDevices[0] = DEVICE_GAMEPAD;
 		if(_inputDevices[1] == DEVICE_AUTO) _inputDevices[1] = DEVICE_GAMEPAD;
 		// make sure other ports have a sane default
 		for(int port = 2; port < 5; ++port) {
 			if(_inputDevices[port] == DEVICE_AUTO) _inputDevices[port] = RETRO_DEVICE_NONE;
 		}
+
+		// Map ports 0..3 to ControllerType using available enums in SettingTypes.h
+		for(int port = 0; port <= 3; ++port) {
+			ControllerType type = ControllerType::NesController;
+			switch(_inputDevices[port]) {
+				case RETRO_DEVICE_NONE: type = ControllerType::None; break;
+				case DEVICE_GAMEPAD: type = ControllerType::NesController; break;
+				case DEVICE_ZAPPER: type = ControllerType::NesZapper; break;
+				case DEVICE_POWERPAD: type = ControllerType::PowerPadSideA; break; // default to side A
+				case DEVICE_ARKANOID: type = ControllerType::NesArkanoidController; break;
+				case DEVICE_SNESGAMEPAD: type = ControllerType::SnesController; break;
+				case DEVICE_SNESMOUSE: type = ControllerType::SnesMouse; break;
+				case DEVICE_VBGAMEPAD: type = ControllerType::VirtualBoyController; break;
+				default: /* leave as default */ break;
+			}
+			// Emu settings now expose NesConfig; update that and write it back.
+			NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+			if(port == 0) nesCfg.Port1.Type = type;
+			else if(port == 1) nesCfg.Port2.Type = type;
+			// Ports 2/3 map to subports; leave them alone for now to avoid mismapping.
+			_emu->GetSettings()->SetNesConfig(nesCfg);
+		}
+
+		// Map port 4 selection to one of the ControllerType expansion/device enums where applicable
+		ControllerType expType = ControllerType::None;
+		switch(_inputDevices[4]) {
+			case RETRO_DEVICE_NONE: expType = ControllerType::None; break;
+			case DEVICE_FAMILYTRAINER: expType = ControllerType::FamilyTrainerMatSideA; break;
+			case DEVICE_PARTYTAP: expType = ControllerType::PartyTap; break;
+			case DEVICE_PACHINKO: expType = ControllerType::Pachinko; break;
+			case DEVICE_EXCITINGBOXING: expType = ControllerType::ExcitingBoxing; break;
+			case DEVICE_KONAMIHYPERSHOT: expType = ControllerType::KonamiHyperShot; break;
+			case DEVICE_OEKAKIDS: expType = ControllerType::OekaKidsTablet; break;
+			case DEVICE_BANDAIHYPERSHOT: expType = ControllerType::BandaiHyperShot; break;
+			case DEVICE_ARKANOID: expType = ControllerType::NesArkanoidController; break;
+			case DEVICE_HORITRACK: expType = ControllerType::HoriTrack; break;
+			case DEVICE_ASCIITURBOFILE: expType = ControllerType::AsciiTurboFile; break;
+			case DEVICE_BATTLEBOX: expType = ControllerType::BattleBox; break;
+			case DEVICE_FOURPLAYERADAPTER: expType = ControllerType::FourPlayerAdapter; break;
+			default: break;
+		}
+		// Map expansion/device selection into the NesConfig ExpPort
+		NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+		nesCfg.ExpPort.Type = expType;
+		_emu->GetSettings()->SetNesConfig(nesCfg);
+
+		// Set HasFourScore if expansion or extra controllers indicate it
+		bool hasFourScore = false;
+	// Consider expansion port (now stored in NesConfig.ExpPort) or extra controllers
+	NesConfig nesCfg2 = _emu->GetSettings()->GetNesConfig();
+	if(nesCfg2.ExpPort.Type != ControllerType::None) hasFourScore = true;
+	// We can't reliably map ports 2/3 without the higher-level helper; skip them here.
+	// Do not set a non-existent EmulationFlags::HasFourScore; let higher-level code infer it.
 /*		//Setup all "auto" ports
 		RomInfo romInfo = _console->GetRomInfo();
 		if(romInfo.IsInDatabase || romInfo.IsNes20Header) {
@@ -1265,7 +1560,9 @@ retro_system_av_info avInfo = {};
 		// Attempt to load the ROM via the Emulator API
 		bool result = false;
 		try {
-			result = _emu->LoadRom(romData, VirtualFile(), true, false);
+			// Do not instruct the emulator to stop any existing ROM here - letting it avoid
+			// the Stop() path which can trigger complex shutdown behavior inside a libretro host.
+			result = _emu->LoadRom(romData, VirtualFile(), false, false);
 		} catch(...) {
 			result = false;
 		}
@@ -1274,6 +1571,12 @@ retro_system_av_info avInfo = {};
 			// Update the concrete console shared_ptr now that a ROM is loaded
 			auto consoleIf = _emu->GetConsole();
 			_console = std::dynamic_pointer_cast<NesConsole>(consoleIf);
+
+			// Inform the LibretroKeyManager of the concrete console/emulator so it can
+			// safely mark itself ready to be polled and access emulator data (mouse pos, etc.).
+			if(_keyManager) {
+				_keyManager->SetConsole(consoleIf, _emu.get());
+			}
 
 			// Allow the game/db-specific controller initialization to run
 			update_core_controllers();
@@ -1286,6 +1589,30 @@ retro_system_av_info avInfo = {};
 
 			// Update memory maps (still a stubbed implementation for now)
 			retro_set_memory_maps();
+
+			// Register the libretro audio device now that the emulator is initialized and consoles are ready
+			if(_audioDevice && _emu && _emu->GetSoundMixer()) {
+				_emu->GetSoundMixer()->RegisterAudioDevice(_audioDevice.get());
+			}
+
+			// Forward any saved input callbacks into the key manager now that console/key manager are initialized.
+			if(_keyManager) {
+				if(_savedGetInputState) _keyManager->SetGetInputState(_savedGetInputState);
+				if(_savedPollInput) _keyManager->SetPollInput(_savedPollInput);
+				// Re-check bitmask support
+				if (env_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
+					_keyManager->SetSupportsInputBitmasks(true);
+			}
+
+			// Diagnostic probe: call saved callbacks once from this thread and log their values.
+			// This uses the shared probe helper so we don't duplicate the implementation.
+			if(_savedPollInput || _savedGetInputState) {
+				// forward-declare the shared probe helper (defined later in this file)
+				if(getenv("MESEN_LIBRETRO_VERBOSE_INPUT")) {
+					void libretro_probe_inputs(const char* tag);
+					libretro_probe_inputs("retro_load_game");
+				}
+			}
 		} else {
 			logMessage(RETRO_LOG_ERROR, "retro_load_game: Failed to load ROM via Emulator::LoadRom.\n");
 			_saveStateSize = 0;

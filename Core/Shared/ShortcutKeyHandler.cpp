@@ -336,7 +336,12 @@ void ShortcutKeyHandler::ProcessKeys()
 	}
 
 	auto lock = _lock.AcquireSafe();
-	KeyManager::RefreshKeyState();
+	// Gate background polling until the registered backend reports readiness.
+	// This avoids calling into partially-initialized backends which may have
+	// null console/emulator pointers or incomplete callback registration.
+	if(KeyManager::IsReady()) {
+		KeyManager::RefreshKeyState();
+	}
 
 	_isKeyboardConnected = _emu->IsKeyboardConnected();
 	_isPaused = _emu->IsPaused();

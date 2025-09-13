@@ -100,6 +100,23 @@ void SoundMixer::PlayAudioBuffer(int16_t* samples, uint32_t sampleCount, uint32_
 		provider->MixAudio(out, count, targetRate);
 	}
 
+	// Optional debug diagnostics for audio pipeline. Gate behind MESEN_LIBRETRO_AUDIO_DEBUG to
+	// avoid excessive noise in normal runs. When enabled, print a lightweight summary every N calls.
+	const char* audioDebugEnv = getenv("MESEN_LIBRETRO_AUDIO_DEBUG");
+	int audioDebugInterval = audioDebugEnv ? atoi(audioDebugEnv) : 0;
+	static uint64_t soundMixerCallCounter = 0;
+	soundMixerCallCounter++;
+	if(audioDebugInterval > 0 && (soundMixerCallCounter % (uint64_t)audioDebugInterval) == 0) {
+		// Snapshot a few metrics
+		int16_t leftLast = _leftSample;
+		int16_t rightLast = _rightSample;
+		bool isPaused = _emu->IsPaused();
+		auto rewindManager = _emu->GetRewindManager();
+		bool rewinding = rewindManager ? rewindManager->IsRewinding() : false;
+		fprintf(stderr, "[mesen] SoundMixer debug: frames=%u sourceRate=%u targetRate=%u masterVol=%u enableAudio=%d isRecording=%d isPaused=%d rewinding=%d\n",
+			(unsigned)count, (unsigned)sourceRate, (unsigned)targetRate, (unsigned)masterVolume, (int)cfg.EnableAudio, (int)isRecording, (int)isPaused, (int)rewinding);
+	}
+
 	if(cfg.EnableEqualizer) {
 		ProcessEqualizer(out, count, targetRate);
 	}
@@ -153,6 +170,22 @@ void SoundMixer::PlayAudioBuffer(int16_t* samples, uint32_t sampleCount, uint32_
 						memset(_pitchAdjustBuffer, 0, 0x8000 * sizeof(int16_t));
 					}
 					out = _pitchAdjustBuffer;
+				}
+
+				// Before forwarding to the audio device, optionally log whether the mixed/resampled buffer
+				// contains non-zero samples so we can determine whether the silence originates upstream.
+				if(audioDebugInterval > 0 && (soundMixerCallCounter % (uint64_t)audioDebugInterval) == 0) {
+					bool allZero = true;
+					int16_t maxAbs = 0;
+					size_t samplesToCheck = (size_t)count * 2; // stereo interleaved
+					for(size_t i = 0; i < samplesToCheck; ++i) {
+						int16_t v = out[i];
+						if(v != 0) allZero = false;
+						int16_t absV = (v == INT16_MIN) ? INT16_MAX : (v < 0 ? -v : v);
+						if(absV > maxAbs) maxAbs = absV;
+					}
+					fprintf(stderr, "[mesen] SoundMixer debug: pre-PlayBuffer frames=%u allZero=%d maxAbs=%d leftLast=%d rightLast=%d\n",
+						(unsigned)count, (int)allZero, (int)maxAbs, (int)_leftSample, (int)_rightSample);
 				}
 
 				_audioDevice->PlayBuffer(out, count, cfg.SampleRate, true);
