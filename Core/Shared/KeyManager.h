@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "Shared/Interfaces/IKeyManager.h"
 #include "Utilities/SimpleLock.h"
+#include <memory>
 
 class Emulator;
 class EmuSettings;
@@ -9,7 +10,9 @@ class EmuSettings;
 class KeyManager
 {
 private:
-	static IKeyManager* _keyManager;
+	static std::shared_ptr<IKeyManager> _keyManager;
+	// Backend readiness flag set by the registered backend when fully initialized.
+	static std::atomic<bool> _backendReady;
 	static MousePosition _mousePosition;
 	static double _xMouseMovement;
 	static double _yMouseMovement;
@@ -17,10 +20,15 @@ private:
 	static SimpleLock _lock;
 
 public:
-	static void RegisterKeyManager(IKeyManager* keyManager);
+	static void RegisterKeyManager(std::shared_ptr<IKeyManager> keyManager);
 	static void SetSettings(EmuSettings* settings);
+	// Called by the registered backend when it has finished initializing
+	// internal state (callbacks, console pointer, etc.) and is safe to be
+	// polled from background threads.
+	static void SetBackendReady(bool ready);
 
 	static void RefreshKeyState();
+	static bool IsReady();
 	static bool IsKeyPressed(uint16_t keyCode);
 	static optional<int16_t> GetAxisPosition(uint16_t keyCode);
 	static bool IsMouseButtonPressed(MouseButton button);

@@ -46,4 +46,8 @@ public:
 	virtual void SetDisabled(bool disabled) = 0;
 
 	virtual void SetForceFeedback(uint16_t magnitudeRight, uint16_t magnitudeLeft) {}
+
+	// NOTE: readiness is now handled by the KeyManager wrapper (SetBackendReady/IsReady)
+	// to avoid adding new virtual methods to this interface and causing vtable
+	// layout changes across translation units.
 };

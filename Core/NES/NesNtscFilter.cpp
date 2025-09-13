@@ -44,12 +44,13 @@ HudScaleFactors NesNtscFilter::GetScaleFactor()
 void NesNtscFilter::OnBeforeApplyFilter()
 {
 	NesConfig& nesCfg = _emu->GetSettings()->GetNesConfig();
+	VideoConfig& videoCfg = _emu->GetSettings()->GetVideoConfig();
 
 	shared_ptr<IConsole> console = _emu->GetConsole();
 	PpuModel model = ((NesConsole*)console.get())->GetPpu()->GetPpuModel();
 
-	if(GenericNtscFilter::NtscFilterOptionsChanged(_ntscSetup, _emu->GetSettings()->GetVideoConfig()) || model != _ppuModel || memcmp(_nesConfig.UserPalette, nesCfg.UserPalette, sizeof(nesCfg.UserPalette)) != 0) {
-		GenericNtscFilter::InitNtscFilter(_ntscSetup, _emu->GetSettings()->GetVideoConfig());
+	if(GenericNtscFilter::NtscFilterOptionsChanged(_ntscSetup, videoCfg) || model != _ppuModel || memcmp(_nesConfig.UserPalette, nesCfg.UserPalette, sizeof(nesCfg.UserPalette)) != 0) {
+		GenericNtscFilter::InitNtscFilter(_ntscSetup, videoCfg);
 
 		uint32_t palette[512];
 		NesDefaultVideoFilter::GetFullPalette(palette, nesCfg, model);

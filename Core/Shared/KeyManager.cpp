@@ -6,25 +6,38 @@
 #include "Shared/Video/VideoDecoder.h"
 #include "Shared/Video/VideoRenderer.h"
 
-IKeyManager* KeyManager::_keyManager = nullptr;
+std::shared_ptr<IKeyManager> KeyManager::_keyManager = nullptr;
 MousePosition KeyManager::_mousePosition = { 0, 0 };
 double KeyManager::_xMouseMovement;
 double KeyManager::_yMouseMovement;
 EmuSettings* KeyManager::_settings = nullptr;
 SimpleLock KeyManager::_lock;
+std::atomic<bool> KeyManager::_backendReady { false };
 
-void KeyManager::RegisterKeyManager(IKeyManager* keyManager)
+void KeyManager::RegisterKeyManager(std::shared_ptr<IKeyManager> keyManager)
 {
 	_xMouseMovement = 0;
 	_yMouseMovement = 0;
-	_keyManager = keyManager;
+	std::atomic_store(&_keyManager, keyManager);
 }
 
 void KeyManager::RefreshKeyState()
 {
-	if(_keyManager != nullptr) {
-		return _keyManager->RefreshState();
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		// Do not call into the backend until it reports ready to be polled by
+		// background threads. Backends must call KeyManager::SetBackendReady(true)
+		// once they have initialized their internal pointers/callbacks to avoid
+		// init-order races.
+		if(!_backendReady.load()) return;
+		return km->RefreshState();
 	}
+}
+
+bool KeyManager::IsReady()
+{
+	// Readiness is now a KeyManager-level flag set by the backend when ready.
+	return _backendReady.load();
 }
 
 void KeyManager::SetSettings(EmuSettings *settings)
@@ -32,58 +45,70 @@ void KeyManager::SetSettings(EmuSettings *settings)
 	_settings = settings;
 }
 
+void KeyManager::SetBackendReady(bool ready)
+{
+	_backendReady.store(ready);
+}
+
 bool KeyManager::IsKeyPressed(uint16_t keyCode)
 {
-	if(_keyManager != nullptr) {
-		return _settings->IsInputEnabled() && _keyManager->IsKeyPressed(keyCode);
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		return _settings && _settings->IsInputEnabled() && km->IsKeyPressed(keyCode);
 	}
 	return false;
 }
 
 optional<int16_t> KeyManager::GetAxisPosition(uint16_t keyCode)
 {
-	if(_keyManager != nullptr && _settings->IsInputEnabled()) {
-		return _keyManager->GetAxisPosition(keyCode);
+	auto km = std::atomic_load(&_keyManager);
+	if(km && _settings && _settings->IsInputEnabled()) {
+		return km->GetAxisPosition(keyCode);
 	}
 	return std::nullopt;
 }
 
 bool KeyManager::IsMouseButtonPressed(MouseButton button)
 {
-	if(_keyManager != nullptr) {
-		return _settings->IsInputEnabled() && _keyManager->IsMouseButtonPressed(button);
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		return _settings && _settings->IsInputEnabled() && km->IsMouseButtonPressed(button);
 	}
 	return false;
 }
 
 vector<uint16_t> KeyManager::GetPressedKeys()
 {
-	if(_keyManager != nullptr) {
-		return _keyManager->GetPressedKeys();
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		return km->GetPressedKeys();
 	}
 	return vector<uint16_t>();
 }
 
 string KeyManager::GetKeyName(uint16_t keyCode)
 {
-	if(_keyManager != nullptr) {
-		return _keyManager->GetKeyName(keyCode);
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		return km->GetKeyName(keyCode);
 	}
 	return "";
 }
 
 uint16_t KeyManager::GetKeyCode(string keyName)
 {
-	if(_keyManager != nullptr) {
-		return _keyManager->GetKeyCode(keyName);
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		return km->GetKeyCode(keyName);
 	}
 	return 0;
 }
 
 void KeyManager::UpdateDevices()
 {
-	if(_keyManager != nullptr) {
-		_keyManager->UpdateDevices();
+	auto km = std::atomic_load(&_keyManager);
+	if(km) {
+		km->UpdateDevices();
 	}
 }
 
@@ -137,9 +162,10 @@ MousePosition KeyManager::GetMousePosition()
 
 void KeyManager::SetForceFeedback(uint16_t magnitudeRight, uint16_t magnitudeLeft)
 {
-	if(_keyManager != nullptr) {
+	auto km = std::atomic_load(&_keyManager);
+	if(km && _settings) {
 		double intensity = _settings->GetInputConfig().ForceFeedbackIntensity;
-		_keyManager->SetForceFeedback(magnitudeRight * intensity, magnitudeLeft * intensity);
+		km->SetForceFeedback(magnitudeRight * intensity, magnitudeLeft * intensity);
 	}
 }
 

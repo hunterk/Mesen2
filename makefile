@@ -29,12 +29,12 @@ UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Linux)
 	MESENOS := linux
-	SHAREDLIB := MesenCore.so
+	SHAREDLIB := MesenNES_libretro.so
 endif
 
 ifeq ($(UNAME_S),Darwin)
 	MESENOS := osx
-	SHAREDLIB := MesenCore.dylib
+	SHAREDLIB := MesenNES_libretro.dylib
 	LTO := false
 	STATICLINK := false
 	LINKCHECKUNRESOLVED :=
@@ -135,7 +135,7 @@ else
 endif
 
 
-CORESRC := $(shell find Core -name '*.cpp')
+CORESRC := $(shell find Core -name '*.cpp') Libretro/libretro.cpp
 COREOBJ := $(CORESRC:.cpp=.o)
 
 UTILSRC := $(shell find Utilities -name '*.cpp' -o -name '*.c')
@@ -196,6 +196,10 @@ ifeq ($(MESENOS),osx)
 	endif
 endif
 
+CFLAGS   += -D LIBRETRO $(fpic) $(LTO)
+CXXFLAGS += -D LIBRETRO $(fpic) -std=c++17 $(LTO)
+LDFLAGS  += $(LTO)
+
 all: ui
 
 ui: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
@@ -204,10 +208,14 @@ ui: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 	cp InteropDLL/$(OBJFOLDER)/$(SHAREDLIB) $(OUTFOLDER)/$(SHAREDLIB)
 	#Called twice because the first call copies native libraries to the bin folder which need to be included in Dependencies.zip
 	#Don't run with AOT flags the first time to reduce build duration
-	cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) -r $(MESENPLATFORM)
-	cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) $(PUBLISHFLAGS)
+	#cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) -r $(MESENPLATFORM)
+	#cd UI && dotnet publish -c $(BUILD_TYPE) $(OPTIMIZEUI) $(PUBLISHFLAGS)
 
 core: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
+
+# Build libretro core independently - use from top-level: make libretro
+libretro: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
+	@echo "Libretro core built successfully: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)"
 
 pgohelper: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 	mkdir -p PGOHelper/$(OBJFOLDER) && cd PGOHelper/$(OBJFOLDER) && $(CXX) $(CXXFLAGS) $(LINKCHECKUNRESOLVED) -o pgohelper ../PGOHelper.cpp ../../bin/pgohelperlib.so -pthread $(FSLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)

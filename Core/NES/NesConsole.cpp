@@ -217,24 +217,45 @@ void NesConsole::LoadHdPack(VirtualFile& romFile)
 {
 	_hdData.reset();
 	if(GetNesConfig().EnableHdPacks) {
+		fprintf(stderr, "[mesen] LoadHdPack: Loading HD pack for ROM: %s\n", romFile.GetFileName().c_str());
 		_hdData.reset(new HdPackData());
 		if(!HdPackLoader::LoadHdNesPack(romFile, *_hdData.get())) {
+			fprintf(stderr, "[mesen] LoadHdPack: Failed to load HD pack\n");
 			_hdData.reset();
 		} else {
+			fprintf(stderr, "[mesen] LoadHdPack: HD pack loaded successfully\n");
 			auto result = _hdData->PatchesByHash.find(romFile.GetSha1Hash());
+			fprintf(stderr, "[mesen] LoadHdPack: ROM SHA1: %s\n", romFile.GetSha1Hash().c_str());
+			fprintf(stderr, "[mesen] LoadHdPack: Patches map has %zu entries\n", _hdData->PatchesByHash.size());
 			if(result != _hdData->PatchesByHash.end()) {
+				fprintf(stderr, "[mesen] LoadHdPack: Found patches for this ROM, applying...\n");
 				VirtualFile patchFile = result->second;
 				romFile.ApplyPatch(patchFile);
+			} else {
+				fprintf(stderr, "[mesen] LoadHdPack: No patches found for this ROM SHA1 - disabling HD pack for this game\n");
+				// No patches for this ROM - don't use HD pack PPU since there's no graphics data
+				_hdData.reset();
+				return;
 			}
 
 			shared_ptr<HdPackData> data = _hdData.lock();
 			if(data) {
+#ifdef LIBRETRO
+				fprintf(stderr, "[mesen] LoadHdPack: Loading HD pack data synchronously (LIBRETRO)\n");
+				// Libretro: Load HD pack data synchronously to avoid thread safety issues
+				// (Libretro callbacks are single-threaded, detached threads cause race conditions)
+				data->LoadAsync();
+#else
+				// Desktop: Load async for responsiveness
 				thread asyncLoadData([data]() {
 					data->LoadAsync();
 				});
 				asyncLoadData.detach();
+#endif
 			}
 		}
+	} else {
+		fprintf(stderr, "[mesen] LoadHdPack: HD packs disabled\n");
 	}
 }
 

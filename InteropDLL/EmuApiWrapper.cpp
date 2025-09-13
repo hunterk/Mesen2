@@ -120,7 +120,8 @@ extern "C" {
 					_mouseManager.reset(new LinuxMouseManager(_windowHandle));
 				#endif
 					
-				KeyManager::RegisterKeyManager(_keyManager.get());
+				// Register using a shared_ptr wrapper for thread-safe registration
+				KeyManager::RegisterKeyManager(std::shared_ptr<IKeyManager>(_keyManager.release()));
 			}
 		}
 	}
@@ -315,8 +316,8 @@ extern "C" {
 	DllExport void __stdcall PgoRunTest(vector<string> testRoms, bool enableDebugger)
 	{
 		FolderUtilities::SetHomeFolder("../PGOMesenHome");
-		PgoKeyManager pgoKeyManager;
-		KeyManager::RegisterKeyManager(&pgoKeyManager);
+		auto pgoKeyManager = std::make_shared<PgoKeyManager>();
+		KeyManager::RegisterKeyManager(pgoKeyManager);
 
 		for(size_t i = 0; i < testRoms.size(); i++) {
 			std::cout << "Running: " << testRoms[i] << std::endl;

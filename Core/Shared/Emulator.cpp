@@ -250,21 +250,29 @@ void Emulator::OnBeforeSendFrame()
 void Emulator::ProcessEndOfFrame()
 {
 	if(!_isRunAheadFrame) {
-		_frameLimiter->ProcessFrame();
-		while(_frameLimiter->WaitForNextFrame()) {
-			if(_stopFlag || _frameDelay != GetFrameDelay() || _paused || _pauseOnNextFrame || _lockCounter > 0) {
-				//Need to process another event, stop sleeping
-				break;
+		// When the emulator is driven externally (for example, via the libretro
+		// front-end) the main Run() loop is not executed and _frameLimiter may
+		// not have been created. Guard against a null pointer here so
+		// ProcessEndOfFrame is safe when frames are stepped manually.
+		if(_frameLimiter) {
+			_frameLimiter->ProcessFrame();
+			while(_frameLimiter->WaitForNextFrame()) {
+				if(_stopFlag || _frameDelay != GetFrameDelay() || _paused || _pauseOnNextFrame || _lockCounter > 0) {
+					//Need to process another event, stop sleeping
+					break;
+				}
+			}
+
+			double newFrameDelay = GetFrameDelay();
+			if(newFrameDelay != _frameDelay) {
+				_frameDelay = newFrameDelay;
+				_frameLimiter->SetDelay(_frameDelay);
 			}
 		}
 
-		double newFrameDelay = GetFrameDelay();
-		if(newFrameDelay != _frameDelay) {
-			_frameDelay = newFrameDelay;
-			_frameLimiter->SetDelay(_frameDelay);
+		if(_console) {
+			_console->GetControlManager()->ProcessEndOfFrame();
 		}
-
-		_console->GetControlManager()->ProcessEndOfFrame();
 	}
 	_frameRunning = false;
 }

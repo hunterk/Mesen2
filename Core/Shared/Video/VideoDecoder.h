@@ -4,6 +4,7 @@
 #include "Utilities/AutoResetEvent.h"
 #include "Shared/SettingTypes.h"
 #include "Shared/RenderedFrame.h"
+#include <thread>
 
 class BaseVideoFilter;
 class ScaleFilter;
@@ -18,7 +19,7 @@ private:
 
 	ConsoleType _consoleType = ConsoleType::Snes;
 
-	unique_ptr<thread> _decodeThread;
+   unique_ptr<std::thread> _decodeThread;
 
 	SimpleLock _stopStartLock;
 	AutoResetEvent _waitForFrame;
