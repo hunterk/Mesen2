@@ -100,14 +100,6 @@ public:
 		// bufferSize is number of frames. _audioSampleBatch expects interleaved int16_t samples and frame count.
 		if(!_audioSampleBatch) return;
 
-		// Optional audio debug: if MESEN_LIBRETRO_AUDIO_DEBUG is set to an integer
-		// value N, print a diagnostic every N calls to help verify audio frames
-		// reach the libretro callback and what it returns. Default is disabled.
-		const char* audioDebug = getenv("MESEN_LIBRETRO_AUDIO_DEBUG");
-		int debugInterval = audioDebug ? atoi(audioDebug) : 0;
-		static uint64_t audioCallCounter = 0;
-		audioCallCounter++;
-
 		// Choose output buffer pointer and sample count (interleaved samples)
 		const int16_t* outPtr = nullptr;
 		size_t outSamples = 0; // number of int16_t samples (not frames)
@@ -127,35 +119,7 @@ public:
 		}
 
 		// Forward frames (bufferSize is frame count)
-		size_t ret = _audioSampleBatch((const int16_t*)outPtr, (size_t)bufferSize);
-
-		if(debugInterval > 0 && (audioCallCounter % (uint64_t)debugInterval) == 0) {
-			// Lightweight diagnostics: check for silent buffer and print sample snapshots
-			bool allZero = true;
-			int16_t maxAbs = 0;
-			size_t toScan = outSamples;
-			for(size_t i = 0; i < toScan; ++i) {
-				int16_t v = outPtr[i];
-				if(v != 0) allZero = false;
-				int16_t absV = (v == INT16_MIN) ? INT16_MAX : (v < 0 ? -v : v);
-				if(absV > maxAbs) maxAbs = absV;
-			}
-
-			// print first/last up to 4 samples
-			auto printSamples = [&](const int16_t* p, size_t count, const char* label) {
-				size_t n = std::min<size_t>(4, count);
-				fprintf(stderr, "[libretro] Audio debug: %s samples:", label);
-				for(size_t i = 0; i < n; ++i) fprintf(stderr, " %d", (int)p[i]);
-				if(count > n) fprintf(stderr, " ...");
-				fprintf(stderr, "\n");
-			};
-
-			size_t frameCount = (size_t)bufferSize;
-			fprintf(stderr, "[libretro] Audio debug: frames=%zu sampleRate=%u stereo=%d ret=%zu allZero=%d maxAbs=%d\n",
-				frameCount, (unsigned)sampleRate, (int)isStereo, ret, (int)allZero, (int)maxAbs);
-			printSamples(outPtr, outSamples, "first");
-			if(outSamples > 4) printSamples(outPtr + (outSamples > 4 ? outSamples - 4 : 0), outSamples, "last");
-		}
+		_audioSampleBatch((const int16_t*)outPtr, (size_t)bufferSize);
 	}
 
 	void Stop() override {}
