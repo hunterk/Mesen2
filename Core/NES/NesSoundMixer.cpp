@@ -69,22 +69,6 @@ void NesSoundMixer::PlayAudioBuffer(uint32_t time)
 {
 	EndFrame(time);
 
-	const char* audioDbg2 = getenv("MESEN_LIBRETRO_AUDIO_DEBUG");
-	int dbg2 = audioDbg2 ? atoi(audioDbg2) : 0;
-	static uint64_t nesDbgCounter = 0;
-	nesDbgCounter++;
-	if(dbg2 > 0 && (nesDbgCounter % (uint64_t)dbg2) == 0) {
-		// Print timestamp count and a small summary of the current output channels
-		size_t tsCount = _timestamps.size();
-		double sumAbs = 0.0;
-		for(size_t i = 0; i < MaxChannelCount; ++i) sumAbs += fabs(_currentOutput[i]);
-		fprintf(stderr, "[mesen] NesSoundMixer debug2: timestamps=%zu sampleCount=%u sumAbsCurrentOutput=%.2f hasPanning=%d\n",
-				tsCount, (unsigned)_sampleCount, sumAbs, (int)_hasPanning);
-		fprintf(stderr, "[mesen] NesSoundMixer debug2: channelOutputs:");
-		for(size_t i = 0; i < std::min<size_t>(8, MaxChannelCount); ++i) fprintf(stderr, " %d", (int)_currentOutput[i]);
-		fprintf(stderr, "\n");
-	}
-
 	int16_t* out = _outputBuffer + (_sampleCount * 2);
 	size_t sampleCount = blip_read_samples(_blipBufLeft, out, NesSoundMixer::MaxSamplesPerFrame, 1);
 
@@ -98,32 +82,6 @@ void NesSoundMixer::PlayAudioBuffer(uint32_t time)
 	}
 
 	_sampleCount += sampleCount;
-
-	// Optional diagnostic: print a small snapshot of the raw NES mixer output before
-	// it is forwarded to the shared SoundMixer. Gate behind MESEN_LIBRETRO_AUDIO_DEBUG
-	// to avoid noisy logs. The env var is interpreted as an integer interval.
-	const char* audioDbg = getenv("MESEN_LIBRETRO_AUDIO_DEBUG");
-	int dbgInterval = audioDbg ? atoi(audioDbg) : 0;
-	static uint64_t nesAudioCounter = 0;
-	nesAudioCounter++;
-	if(dbgInterval > 0 && (nesAudioCounter % (uint64_t)dbgInterval) == 0) {
-		size_t frames = sampleCount;
-		bool allZero = true;
-		int16_t maxAbs = 0;
-		// samples are interleaved stereo in out (left,right)
-		for(size_t i = 0; i < frames * 2; ++i) {
-			int16_t v = out[i];
-			if(v != 0) allZero = false;
-			int16_t absV = (v == INT16_MIN) ? INT16_MAX : (v < 0 ? -v : v);
-			if(absV > maxAbs) maxAbs = absV;
-		}
-		fprintf(stderr, "[mesen] NesSoundMixer debug: frames=%zu allZero=%d maxAbs=%d\n", frames, (int)allZero, (int)maxAbs);
-		// print first up to 6 samples
-		size_t printCount = std::min<size_t>(6, frames * 2);
-		fprintf(stderr, "[mesen] NesSoundMixer debug: samples:");
-		for(size_t i = 0; i < printCount; ++i) fprintf(stderr, " %d", (int)out[i]);
-		fprintf(stderr, "\n");
-	}
 
 	if(_console->GetVsMainConsole()) {
 		//Keep samples in buffer if this is the VS dualsystem sub console - the main console will read them and play them
