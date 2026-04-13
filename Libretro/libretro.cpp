@@ -1578,6 +1578,28 @@ retro_system_av_info avInfo = {};
 				_keyManager->SetConsole(consoleIf, _emu.get());
 			}
 
+			// Initialize audio settings to enable sound output
+			// Ensure audio is enabled and channel volumes are set
+			{
+				AudioConfig audioCfg = _emu->GetSettings()->GetAudioConfig();
+				audioCfg.EnableAudio = true;
+				audioCfg.MasterVolume = 100;
+				_emu->GetSettings()->SetAudioConfig(audioCfg);
+				
+				NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+				// Initialize all channel volumes to 100 (full volume) if they're zero
+				for(size_t i = 0; i < 11; ++i) {
+					if(nesCfg.ChannelVolumes[i] == 0) {
+						nesCfg.ChannelVolumes[i] = 100;
+					}
+					// Initialize panning to center (50) if zero
+					if(nesCfg.ChannelPanning[i] == 0) {
+						nesCfg.ChannelPanning[i] = 50;
+					}
+				}
+				_emu->GetSettings()->SetNesConfig(nesCfg);
+			}
+
 			// Allow the game/db-specific controller initialization to run
 			update_core_controllers();
 			update_input_descriptors();
