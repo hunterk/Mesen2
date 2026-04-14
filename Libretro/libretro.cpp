@@ -99,23 +99,14 @@ static uint32_t _lastReportedHeight = 240;
 class LibretroAudioDevice : public IAudioDevice {
 public:
 	LibretroAudioDevice() {
-		fprintf(stderr, "[libretro] LibretroAudioDevice created\n");
 	}
 	~LibretroAudioDevice() override {
-		fprintf(stderr, "[libretro] LibretroAudioDevice destroyed\n");
 	}
 
 	void PlayBuffer(int16_t *soundBuffer, uint32_t bufferSize, uint32_t sampleRate, bool isStereo) override {
 		// bufferSize is number of frames. _audioSampleBatch expects interleaved int16_t samples and frame count.
 		if(!_audioSampleBatch) {
-			fprintf(stderr, "[libretro] PlayBuffer: _audioSampleBatch is null!\n");
 			return;
-		}
-
-		static int audioCallCount = 0;
-		if(++audioCallCount % 100 == 0) {
-			fprintf(stderr, "[libretro] PlayBuffer called (call #%d): bufferSize=%u, sampleRate=%u, stereo=%d\n", 
-				audioCallCount, bufferSize, sampleRate, isStereo);
 		}
 
 		// Choose output buffer pointer (interleaved samples)
@@ -520,7 +511,6 @@ extern "C" {
 		// help debug frontend timing/order issues. This is noisy by default so
 		// gate it behind an environment variable (MESEN_LIBRETRO_VERBOSE_INPUT).
 		if((pollInput || _savedGetInputState) && getenv("MESEN_LIBRETRO_VERBOSE_INPUT")) {
-			fprintf(stderr, "[libretro] Diagnostic (setter): probing input callbacks after SetPollInput\n");
 			extern void libretro_probe_inputs(const char*);
 			libretro_probe_inputs("setter_poll");
 		}
@@ -532,7 +522,6 @@ extern "C" {
 		if(_keyManager) _keyManager->SetGetInputState(getInputState);
 
 		if((getInputState || _savedPollInput) && getenv("MESEN_LIBRETRO_VERBOSE_INPUT")) {
-			fprintf(stderr, "[libretro] Diagnostic (setter): probing input callbacks after SetGetInputState\n");
 			extern void libretro_probe_inputs(const char*);
 			libretro_probe_inputs("setter_getstate");
 		}
@@ -544,9 +533,8 @@ extern "C" {
 void libretro_probe_inputs(const char* tag)
 {
 	if(!env_cb) return;
-	fprintf(stderr, "[libretro] Diagnostic(%s): probe start\n", tag);
 	if(_savedPollInput) {
-		try { _savedPollInput(); fprintf(stderr, "[libretro] Diagnostic(%s): poll() ok\n", tag); } catch(...) { fprintf(stderr, "[libretro] Diagnostic(%s): poll() threw\n", tag); }
+		try { _savedPollInput(); } catch(...) { }
 	}
 	// Query bitmask capability but avoid calling the frontend get_state callback here.
 	// Some libretro frontends crash if get_state is invoked outside their expected
@@ -555,9 +543,6 @@ void libretro_probe_inputs(const char* tag)
 	// RefreshState path which runs on the emulator/main thread.
 	bool bitmasks = false;
 	if (env_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL)) bitmasks = true;
-	fprintf(stderr, "[libretro] Diagnostic(%s): supports bitmasks=%d\n", tag, (int)bitmasks);
-	fprintf(stderr, "[libretro] Diagnostic(%s): skipping direct get_state() calls to avoid host crashes\n", tag);
-	fprintf(stderr, "[libretro] Diagnostic(%s): probe end\n", tag);
 }
 
 	RETRO_API void retro_reset()
@@ -1112,7 +1097,6 @@ void libretro_probe_inputs(const char* tag)
 					_lastReportedWidth = newWidth;
 					_lastReportedHeight = newHeight;
 					env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
-					fprintf(stderr, "[libretro] Geometry updated: %ux%u\n", newWidth, newHeight);
 				}
 				_geometryDirty = false;
 			}
@@ -1711,11 +1695,8 @@ void libretro_probe_inputs(const char* tag)
 		try {
 			// Do not instruct the emulator to stop any existing ROM here - letting it avoid
 			// the Stop() path which can trigger complex shutdown behavior inside a libretro host.
-			fprintf(stderr, "[libretro] Loading ROM: %s (HD packs %s)\n", gamePath.c_str(), _hdPacksEnabled ? "enabled" : "disabled");
 			result = _emu->LoadRom(romData, VirtualFile(), false, false);
-			fprintf(stderr, "[libretro] ROM load result: %s\n", result ? "SUCCESS" : "FAILED");
 		} catch(...) {
-			fprintf(stderr, "[libretro] Exception during ROM load\n");
 			result = false;
 		}
 
@@ -1766,17 +1747,11 @@ void libretro_probe_inputs(const char* tag)
 
 			// Register the libretro audio device now that the emulator is initialized and consoles are ready
 			if(_audioDevice && _emu && _emu->GetSoundMixer()) {
-				fprintf(stderr, "[libretro] Registering audio device with SoundMixer\n");
 				_emu->GetSoundMixer()->RegisterAudioDevice(_audioDevice.get());
-				fprintf(stderr, "[libretro] Audio device registered successfully\n");
-			} else {
-				fprintf(stderr, "[libretro] WARNING: Cannot register audio device - _audioDevice=%p, _emu=%p, mixer=%p\n",
-					_audioDevice.get(), _emu.get(), _emu ? _emu->GetSoundMixer() : nullptr);
 			}
 
 			// Update geometry if HD packs are loaded (they may change the resolution)
 			if(_console && _console->GetHdData()) {
-				fprintf(stderr, "[libretro] HD pack detected - updating geometry\n");
 				retro_system_av_info avInfo = {};
 				retro_get_system_av_info(&avInfo);
 				env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
@@ -1865,7 +1840,6 @@ void libretro_probe_inputs(const char* tag)
 			if(hdData) {
 				hscale = hdData->Scale;
 				vscale = hdData->Scale;
-				fprintf(stderr, "[libretro] HD pack detected: scale = %u\n", hscale);
 			}
 		}
 		
@@ -1880,9 +1854,6 @@ void libretro_probe_inputs(const char* tag)
 		info->geometry.aspect_ratio = 4.0f / 3.0f;
 		info->timing.fps = 60.0988;
 		info->timing.sample_rate = 44100.0;
-		
-		fprintf(stderr, "[libretro] AV info: %ux%u (aspect %.2f, fps %.4f)\n", 
-			width, height, info->geometry.aspect_ratio, info->timing.fps);
 	}
 
 	RETRO_API void *retro_get_memory_data(unsigned id)
