@@ -87,24 +87,41 @@ static std::string _selectedRegion;
 static std::string _selectedRamState;
 // new local stub for screen rotation
 static int _screenRotation = 0;
+// Geometry tracking
+static bool _geometryDirty = false;
+static VideoConfig _lastVideoConfig = {};
+static NesConfig _lastNesConfig = {};
+static uint32_t _lastReportedWidth = 256;
+static uint32_t _lastReportedHeight = 240;
 
 // Small audio device implementation that forwards audio from the core's
 // SoundMixer to libretro's audio callback (_audioSampleBatch).
 class LibretroAudioDevice : public IAudioDevice {
 public:
-	LibretroAudioDevice() {}
-	~LibretroAudioDevice() override {}
+	LibretroAudioDevice() {
+		fprintf(stderr, "[libretro] LibretroAudioDevice created\n");
+	}
+	~LibretroAudioDevice() override {
+		fprintf(stderr, "[libretro] LibretroAudioDevice destroyed\n");
+	}
 
 	void PlayBuffer(int16_t *soundBuffer, uint32_t bufferSize, uint32_t sampleRate, bool isStereo) override {
 		// bufferSize is number of frames. _audioSampleBatch expects interleaved int16_t samples and frame count.
-		if(!_audioSampleBatch) return;
+		if(!_audioSampleBatch) {
+			fprintf(stderr, "[libretro] PlayBuffer: _audioSampleBatch is null!\n");
+			return;
+		}
 
-		// Choose output buffer pointer and sample count (interleaved samples)
+		static int audioCallCount = 0;
+		if(++audioCallCount % 100 == 0) {
+			fprintf(stderr, "[libretro] PlayBuffer called (call #%d): bufferSize=%u, sampleRate=%u, stereo=%d\n", 
+				audioCallCount, bufferSize, sampleRate, isStereo);
+		}
+
+		// Choose output buffer pointer (interleaved samples)
 		const int16_t* outPtr = nullptr;
-		size_t outSamples = 0; // number of int16_t samples (not frames)
 		if(isStereo) {
 			outPtr = soundBuffer;
-			outSamples = (size_t)bufferSize * 2;
 		} else {
 			// Convert mono -> stereo by duplicating samples into a temporary buffer
 			_monoBuffer.resize(bufferSize * 2);
@@ -114,7 +131,6 @@ public:
 				_monoBuffer[i * 2 + 1] = s;
 			}
 			outPtr = _monoBuffer.data();
-			outSamples = (size_t)bufferSize * 2;
 		}
 
 		// Forward frames (bufferSize is frame count)
@@ -138,7 +154,14 @@ static std::unique_ptr<LibretroAudioDevice> _audioDevice;
 
 static constexpr const char* MesenNtscFilter = "mesen_ntsc_filter";
 static constexpr const char* MesenPalette = "mesen_palette";
-static constexpr const char* MesenNoSpriteLimit = "mesen_nospritelimit";
+static constexpr const char* MesenSpriteLimit = "mesen_sprite_limit";
+static constexpr const char* MesenEnablePalBorders = "mesen_enable_pal_borders";
+static constexpr const char* MesenSpritesEnabled = "mesen_sprites_enabled";
+static constexpr const char* MesenBackgroundEnabled = "mesen_background_enabled";
+static constexpr const char* MesenAllowInvalidInput = "mesen_allow_invalid_input";
+static constexpr const char* MesenDisableGameGenieBusConflicts = "mesen_disable_game_genie_bus_conflicts";
+static constexpr const char* MesenRandomizeMapperPowerOnState = "mesen_randomize_mapper_power_on_state";
+static constexpr const char* MesenRandomizeCpuPpuAlignment = "mesen_randomize_cpu_ppu_alignment";
 static constexpr const char* MesenOverclock = "mesen_overclock";
 static constexpr const char* MesenOverclockType = "mesen_overclock_type";
 static constexpr const char* MesenOverscanLeft = "mesen_overscan_left";
@@ -269,33 +292,132 @@ extern "C" {
 	{
 		env_cb = env;
 
-		static constexpr struct retro_variable vars[] = {
-			{ MesenNtscFilter, "NTSC filter; Disabled|Composite (Blargg)|S-Video (Blargg)|RGB (Blargg)|Monochrome (Blargg)|Bisqwit 2x|Bisqwit 4x|Bisqwit 8x" },
-			{ MesenPalette, "Palette; Default|Composite Direct (by FirebrandX)|Nes Classic|Nestopia (RGB)|Original Hardware (by FirebrandX)|PVM Style (by FirebrandX)|Sony CXA2025AS|Unsaturated v6 (by FirebrandX)|YUV v3 (by FirebrandX)|Wavebeam (by nakedarthur)|Custom|Raw" },
-			{ MesenOverclock, "Overclock; None|Low|Medium|High|Very High" },
-			{ MesenOverclockType, "Overclock Type; Before NMI (Recommended)|After NMI" },
-			{ MesenRegion, "Region; Auto|NTSC|PAL|Dendy" },
-			{ MesenOverscanLeft, "Left Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanRight, "Right Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanTop, "Top Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanBottom, "Bottom Overscan; None|4px|8px|12px|16px" },
-			{ MesenAspectRatio, "Aspect Ratio; Auto|No Stretching|NTSC|PAL|4:3|4:3 (Preserved)|16:9|16:9 (Preserved)" },
-			{ MesenControllerTurboSpeed, "Controller Turbo Speed; Fast|Very Fast|Disabled|Slow|Normal" },
-			{ MesenShiftButtonsClockwise, u8"Shift A/B/X/Y clockwise; disabled|enabled" },
-			{ MesenHdPacks, "Enable HD Packs; enabled|disabled" },
-			{ MesenNoSpriteLimit, "Remove sprite limit; disabled|enabled" },
-			{ MesenFakeStereo, u8"Enable fake stereo effect; disabled|enabled" },
-			{ MesenMuteTriangleUltrasonic, u8"Reduce popping on Triangle channel; enabled|disabled" },
-			{ MesenReduceDmcPopping, u8"Reduce popping on DMC channel; enabled|disabled" },
-			{ MesenSwapDutyCycle, u8"Swap Square channel duty cycles; disabled|enabled" },
-			{ MesenDisableNoiseModeFlag, u8"Disable Noise channel mode flag; disabled|enabled" },
-			{ MesenScreenRotation, u8"Screen Rotation; None|90 degrees|180 degrees|270 degrees" },
-			{ MesenRamState, "Default power-on state for RAM; All 0s (Default)|All 1s|Random Values" },
-			{ MesenFdsAutoSelectDisk, "FDS: Automatically insert disks; disabled|enabled" },
-			{ MesenFdsFastForwardLoad, "FDS: Fast forward while loading; disabled|enabled" },
-			{ MesenAudioSampleRate, "Sound Output Sample Rate; 48000|96000|11025|22050|44100" },
-			{ NULL, NULL },
+		// Core Options v2: Categories
+		static const retro_core_option_v2_category option_cats[] = {
+			{ "system", "System", "System settings (region, RAM, overclock)" },
+			{ "video", "Video", "Video settings (palette, filters, overscan)" },
+			{ "audio", "Audio", "Audio settings (filters, channels, sample rate)" },
+			{ "input", "Input", "Input controller settings" },
+			{ "enhancements", "Enhancements", "Enhancement options (HD packs, sprite limit)" },
+			{ NULL, NULL, NULL }
 		};
+
+		// Core Options v2: Definitions
+		static const retro_core_option_v2_definition option_defs[] = {
+			// System category
+			{ MesenRegion, "System - Region", "Region", "Select NES region", NULL, "system",
+				{{ "Auto", "Auto" }, { "NTSC", "NTSC" }, { "PAL", "PAL" }, { "Dendy", "Dendy" }, { NULL, NULL }},
+				"Auto" },
+			{ MesenRamState, "System - RAM Power-On State", "RAM Power-On State", "Default power-on state for RAM", NULL, "system",
+				{{ "All 0s (Default)", "All 0s" }, { "All 1s", "All 1s" }, { "Random Values", "Random" }, { NULL, NULL }},
+				"All 0s (Default)" },
+			{ MesenOverclock, "System - Overclock", "Overclock", "Overclock the NES CPU", NULL, "system",
+				{{ "None", "None" }, { "Low", "Low" }, { "Medium", "Medium" }, { "High", "High" }, { "Very High", "Very High" }, { NULL, NULL }},
+				"None" },
+			{ MesenOverclockType, "System - Overclock Type", "Overclock Type", "When to apply overclock", NULL, "system",
+				{{ "Before NMI (Recommended)", "Before NMI" }, { "After NMI", "After NMI" }, { NULL, NULL }},
+				"Before NMI (Recommended)" },
+			{ MesenFdsAutoSelectDisk, "System - FDS Auto Insert Disk", "FDS Auto Insert", "Automatically insert disks on FDS games", NULL, "system",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenFdsFastForwardLoad, "System - FDS Fast Forward On Load", "FDS Fast Forward", "Fast forward while FDS is loading", NULL, "system",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenAllowInvalidInput, "System - Allow Invalid Input", "Allow Invalid Input", "Allow invalid input combinations", NULL, "system",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenRandomizeMapperPowerOnState, "System - Randomize Mapper Power-On State", "Randomize Mapper Power-On", "Randomize mapper power-on state (for testing)", NULL, "system",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenRandomizeCpuPpuAlignment, "System - Randomize CPU/PPU Alignment", "Randomize CPU/PPU Alignment", "Randomize CPU/PPU alignment (for testing)", NULL, "system",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+
+			// Video category
+			{ MesenPalette, "Video - Palette", "Palette", "Select color palette", NULL, "video",
+				{{ "Default", "Default" }, { "Composite Direct (by FirebrandX)", "Composite Direct" }, { "Nes Classic", "NES Classic" }, { "Nestopia (RGB)", "Nestopia RGB" }, { "Original Hardware (by FirebrandX)", "Original Hardware" }, { "PVM Style (by FirebrandX)", "PVM Style" }, { "Sony CXA2025AS", "Sony CXA2025AS" }, { "Unsaturated v6 (by FirebrandX)", "Unsaturated v6" }, { "YUV v3 (by FirebrandX)", "YUV v3" }, { "Wavebeam (by nakedarthur)", "Wavebeam" }, { "Custom", "Custom" }, { "Raw", "Raw" }, { NULL, NULL }},
+				"Default" },
+			{ MesenNtscFilter, "Video - NTSC Filter", "NTSC Filter", "NTSC video filter", NULL, "video",
+				{{ "Disabled", "Disabled" }, { "Composite (Blargg)", "Composite (Blargg)" }, { "S-Video (Blargg)", "S-Video (Blargg)" }, { "RGB (Blargg)", "RGB (Blargg)" }, { "Monochrome (Blargg)", "Monochrome (Blargg)" }, { "Bisqwit 2x", "Bisqwit 2x" }, { "Bisqwit 4x", "Bisqwit 4x" }, { "Bisqwit 8x", "Bisqwit 8x" }, { NULL, NULL }},
+				"Disabled" },
+			{ MesenOverscanLeft, "Video - Overscan Left", "Overscan Left", "Left overscan", NULL, "video",
+				{{ "None", "None" }, { "4px", "4px" }, { "8px", "8px" }, { "12px", "12px" }, { "16px", "16px" }, { NULL, NULL }},
+				"None" },
+			{ MesenOverscanRight, "Video - Overscan Right", "Overscan Right", "Right overscan", NULL, "video",
+				{{ "None", "None" }, { "4px", "4px" }, { "8px", "8px" }, { "12px", "12px" }, { "16px", "16px" }, { NULL, NULL }},
+				"None" },
+			{ MesenOverscanTop, "Video - Overscan Top", "Overscan Top", "Top overscan", NULL, "video",
+				{{ "None", "None" }, { "4px", "4px" }, { "8px", "8px" }, { "12px", "12px" }, { "16px", "16px" }, { NULL, NULL }},
+				"None" },
+			{ MesenOverscanBottom, "Video - Overscan Bottom", "Overscan Bottom", "Bottom overscan", NULL, "video",
+				{{ "None", "None" }, { "4px", "4px" }, { "8px", "8px" }, { "12px", "12px" }, { "16px", "16px" }, { NULL, NULL }},
+				"None" },
+			{ MesenAspectRatio, "Video - Aspect Ratio", "Aspect Ratio", "Display aspect ratio", NULL, "video",
+				{{ "Auto", "Auto" }, { "No Stretching", "No Stretching" }, { "NTSC", "NTSC" }, { "PAL", "PAL" }, { "4:3", "4:3" }, { "4:3 (Preserved)", "4:3 (Preserved)" }, { "16:9", "16:9" }, { "16:9 (Preserved)", "16:9 (Preserved)" }, { NULL, NULL }},
+				"Auto" },
+			{ MesenScreenRotation, "Video - Screen Rotation", "Screen Rotation", "Rotate screen display", NULL, "video",
+				{{ "None", "None" }, { "90 degrees", "90 degrees" }, { "180 degrees", "180 degrees" }, { "270 degrees", "270 degrees" }, { NULL, NULL }},
+				"None" },
+			{ MesenEnablePalBorders, "Video - Enable PAL Borders", "PAL Borders", "Show borders in PAL mode", NULL, "video",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+
+			// Audio category
+			{ MesenFakeStereo, "Audio - Fake Stereo", "Fake Stereo", "Enable fake stereo effect", NULL, "audio",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenMuteTriangleUltrasonic, "Audio - Reduce Triangle Popping", "Reduce Triangle Popping", "Mute Triangle channel ultrasonic frequencies", NULL, "audio",
+				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
+				"enabled" },
+			{ MesenReduceDmcPopping, "Audio - Reduce DMC Popping", "Reduce DMC Popping", "Reduce popping on DMC channel", NULL, "audio",
+				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
+				"enabled" },
+			{ MesenSwapDutyCycle, "Audio - Swap Duty Cycles", "Swap Duty Cycles", "Swap Square channel duty cycles", NULL, "audio",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenDisableNoiseModeFlag, "Audio - Disable Noise Mode Flag", "Disable Noise Mode", "Disable Noise channel mode flag", NULL, "audio",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+			{ MesenAudioSampleRate, "Audio - Sample Rate", "Sample Rate", "Audio output sample rate", NULL, "audio",
+				{{ "48000", "48000 Hz" }, { "96000", "96000 Hz" }, { "11025", "11025 Hz" }, { "22050", "22050 Hz" }, { "44100", "44100 Hz" }, { NULL, NULL }},
+				"48000" },
+
+			// Input category
+			{ MesenControllerTurboSpeed, "Input - Controller Turbo Speed", "Turbo Speed", "Turbo button speed", NULL, "input",
+				{{ "Fast", "Fast" }, { "Very Fast", "Very Fast" }, { "Disabled", "Disabled" }, { "Slow", "Slow" }, { "Normal", "Normal" }, { NULL, NULL }},
+				"Normal" },
+			{ MesenShiftButtonsClockwise, "Input - Shift Buttons Clockwise", "Shift Buttons", "Shift A/B/X/Y buttons clockwise", NULL, "input",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+
+			// Enhancements category (additional options)
+			{ MesenSpritesEnabled, "Enhancements - Sprites Enabled", "Sprites Enabled", "Enable sprite rendering", NULL, "enhancements",
+				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
+				"enabled" },
+			{ MesenBackgroundEnabled, "Enhancements - Background Enabled", "Background Enabled", "Enable background rendering", NULL, "enhancements",
+				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
+				"enabled" },
+			{ MesenDisableGameGenieBusConflicts, "Enhancements - Disable Game Genie Bus Conflicts", "Game Genie Bus Conflicts", "Disable Game Genie bus conflicts", NULL, "enhancements",
+				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
+				"disabled" },
+
+			// Enhancements category
+			{ MesenHdPacks, "Enhancements - HD Packs", "HD Packs", "Enable HD graphics packs", NULL, "enhancements",
+				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
+				"enabled" },
+			{ MesenSpriteLimit, "Enhancements - Sprite Limit", "Sprite Limit", "8-sprite scanline limit", NULL, "enhancements",
+				{{ "normal", "Normal" }, { "adaptive", "Adaptive" }, { "off", "Off" }, { NULL, NULL }},
+				"normal" },
+
+			{ NULL, NULL, NULL, NULL, NULL, NULL, {{ NULL, NULL }}, NULL }
+		};
+
+		static retro_core_options_v2 core_opt_info = { 
+			(retro_core_option_v2_category*)option_cats,
+			(retro_core_option_v2_definition*)option_defs
+		};
+
+		env_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &core_opt_info);
 
 		static constexpr struct retro_controller_description pads1[] = {
 			{ "Auto", DEVICE_AUTO },
@@ -368,7 +490,6 @@ extern "C" {
 			{ NULL, false, false }
 		};
 
-		env_cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
 		env_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
 		env_cb(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void*)content_overrides);
 	}
@@ -516,62 +637,79 @@ void libretro_probe_inputs(const char* tag)
 	void update_settings()
 	{
 		struct retro_variable var = { };
-		// Picture settings API moved/renamed in EmuSettings; no-op here for now.
-		// HD packs flag access moved; initialize to false until the proper API is wired.
-		_hdPacksEnabled = false;
+		NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+		VideoConfig videoCfg = _emu->GetSettings()->GetVideoConfig();
+		AudioConfig audioCfg = _emu->GetSettings()->GetAudioConfig();
 
-		// Flag mappings need proper EmuSettings/NesConfig mapping; skip for now.
-		set_flag(MesenNoSpriteLimit, 0); // placeholder no-op
-		set_flag(MesenHdPacks, 0);
-		set_flag(MesenMuteTriangleUltrasonic, 0);
-		set_flag(MesenReduceDmcPopping, 0);
-		set_flag(MesenSwapDutyCycle, 0);
-		set_flag(MesenDisableNoiseModeFlag, 0);
-		set_flag(MesenFdsAutoSelectDisk, 0);
-		set_flag(MesenFdsFastForwardLoad, 0);
-
-		// Fake stereo / audio filter options moved; ignore here for now.
-		if(readVariable(MesenFakeStereo, var)) {
-			// no-op
-			(void)var;
-		}
+		// ===== SYSTEM SETTINGS =====
 		
-/*		if(readVariable(MesenNtscFilter, var)) {
+		// Region
+		if(readVariable(MesenRegion, var)) {
 			string value = string(var.value);
-			if(value == "Disabled") {
-				_emu->GetSettings()->SetVideoConfig(_emu->GetSettings()->GetVideoConfig()); // placeholder to access video config
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::None);
-			} else if(value == "Composite (Blargg)") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBlargg);
-				_emu->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "S-Video (Blargg)") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBlargg);
-				_emu->GetSettings()->SetNtscFilterSettings(-1.0, 0, -1.0, 0, 0.2, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "RGB (Blargg)") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBlargg);
-				_emu->GetSettings()->SetPictureSettings(0, 0, 0, 0, 0);
-				_emu->GetSettings()->SetNtscFilterSettings(-1.0, -1.0, -1.0, 0, 0.7, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "Monochrome (Blargg)") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBlargg);
-				_emu->GetSettings()->SetPictureSettings(0, 0, -1.0, 0, 0);
-				_emu->GetSettings()->SetNtscFilterSettings(-0.2, -0.1, -0.2, 0, 0.7, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 2x") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBisqwit);
-				_emu->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 4x") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBisqwit);
-				_emu->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 8x") {
-				_emu->GetSettings()->SetVideoFilterType(VideoFilterType::NtscBisqwit);
-				_emu->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
+			if(value == "NTSC") {
+				nesCfg.Region = ConsoleRegion::Ntsc;
+			} else if(value == "PAL") {
+				nesCfg.Region = ConsoleRegion::Pal;
+			} else if(value == "Dendy") {
+				nesCfg.Region = ConsoleRegion::Dendy;
+			} else {
+				nesCfg.Region = ConsoleRegion::Auto;
 			}
-		} */
-		if(readVariable(MesenNtscFilter, var)) {
-			// EmuSettings API for NTSC filters changed. Save the user's choice locally
-			// and map to the real API later once we inspect EmuSettings(Video) types.
-			_selectedNtscFilter = string(var.value);
 		}
 
+		// RAM Power-On State
+		if(readVariable(MesenRamState, var)) {
+			string value = string(var.value);
+			if(value == "All 1s") {
+				nesCfg.RamPowerOnState = RamState::AllOnes;
+			} else if(value == "Random Values") {
+				nesCfg.RamPowerOnState = RamState::Random;
+			} else {
+				nesCfg.RamPowerOnState = RamState::AllZeros;
+			}
+		}
+
+		// Overclock
+		int lineCountBefore = 0;
+		int lineCountAfter = 0;
+		bool beforeNmi = true;
+		if(readVariable(MesenOverclockType, var)) {
+			string value = string(var.value);
+			beforeNmi = (value != "After NMI");
+		}
+
+		if(readVariable(MesenOverclock, var)) {
+			string value = string(var.value);
+			int lineCount = 0;
+			if(value == "Low") {
+				lineCount = 100;
+			} else if(value == "Medium") {
+				lineCount = 250;
+			} else if(value == "High") {
+				lineCount = 500;
+			} else if(value == "Very High") {
+				lineCount = 1000;
+			}
+			if(beforeNmi) {
+				lineCountBefore = lineCount;
+			} else {
+				lineCountAfter = lineCount;
+			}
+		}
+		nesCfg.PpuExtraScanlinesBeforeNmi = lineCountBefore;
+		nesCfg.PpuExtraScanlinesAfterNmi = lineCountAfter;
+
+		// FDS options
+		if(readVariable(MesenFdsAutoSelectDisk, var)) {
+			nesCfg.FdsAutoInsertDisk = (string(var.value) == "enabled");
+		}
+		if(readVariable(MesenFdsFastForwardLoad, var)) {
+			nesCfg.FdsFastForwardOnLoad = (string(var.value) == "enabled");
+		}
+
+		// ===== VIDEO SETTINGS =====
+		
+		// Palette
 		if(readVariable(MesenPalette, var)) {
 			string value = string(var.value);
 			if(value == "Default") {
@@ -597,147 +735,129 @@ void libretro_probe_inputs(const char* tag)
 			} else if(value == "Custom") {
 				load_custom_palette();
 			} else if(value == "Raw") {
-				//Using the raw palette replaces the NTSC filters, if one is selected
-            _videoFilterRaw = true;
+				_videoFilterRaw = true;
 			}
 		}
 
-		// Propagate the selected/user palette into the emulator's NesConfig so
-		// the video filters have a valid palette to build their lookup tables.
-		// If we only have 64 entries use the standard 64-entry palette mode;
-		// if we have 512 entries treat it as a full-color palette.
-		{
-			NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+		// Copy palette into NesConfig (skip if raw mode is enabled)
+		if(!_videoFilterRaw) {
 			if(_userRgbPalette.size() >= 512) {
-				// copy up to 512 entries
 				for(size_t i = 0; i < 512; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
 				nesCfg.IsFullColorPalette = true;
 			} else {
-				// copy 64-entry palette
 				for(size_t i = 0; i < 64; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
 				nesCfg.IsFullColorPalette = false;
 			}
-			_emu->GetSettings()->SetNesConfig(nesCfg);
 		}
 
-		bool beforeNmi = true;
-		if(readVariable(MesenOverclockType, var)) {
-			string value = string(var.value);
-			if(value == "After NMI") {
-				beforeNmi = false;
+		// NTSC Filter - map string selection to VideoFilterType enum and apply settings
+		if(readVariable(MesenNtscFilter, var)) {
+			string filterValue = string(var.value);
+			if(filterValue == "Disabled") {
+				videoCfg.VideoFilter = VideoFilterType::None;
+			} else if(filterValue == "Composite (Blargg)") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
+				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Composite;
+			} else if(filterValue == "S-Video (Blargg)") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
+				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Svideo;
+			} else if(filterValue == "RGB (Blargg)") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
+				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Rgb;
+			} else if(filterValue == "Monochrome (Blargg)") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
+				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Monochrome;
+			} else if(filterValue == "Bisqwit 2x") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBisqwit;
+				videoCfg.NtscScale = NtscBisqwitFilterScale::_2x;
+			} else if(filterValue == "Bisqwit 4x") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBisqwit;
+				videoCfg.NtscScale = NtscBisqwitFilterScale::_4x;
+			} else if(filterValue == "Bisqwit 8x") {
+				videoCfg.VideoFilter = VideoFilterType::NtscBisqwit;
+				videoCfg.NtscScale = NtscBisqwitFilterScale::_8x;
 			}
 		}
 
-		if(readVariable(MesenOverclock, var)) {
-			string value = string(var.value);
-			int lineCount = 0;
-			if(value == "None") {
-				lineCount = 0;
-			} else if(value == "Low") {
-				lineCount = 100;
-			} else if(value == "Medium") {
-				lineCount = 250;
-			} else if(value == "High") {
-				lineCount = 500;
-			} else if(value == "Very High") {
-				lineCount = 1000;
-			}
+		// Overscan
+		nesCfg.NtscOverscan.Left = readOverscanValue(MesenOverscanLeft);
+		nesCfg.NtscOverscan.Right = readOverscanValue(MesenOverscanRight);
+		nesCfg.NtscOverscan.Top = readOverscanValue(MesenOverscanTop);
+		nesCfg.NtscOverscan.Bottom = readOverscanValue(MesenOverscanBottom);
+		// Use same overscan for PAL
+		nesCfg.PalOverscan = nesCfg.NtscOverscan;
 
-        // PPU NMI config API moved; store locally until mapped
-        if(beforeNmi) {
-            _ppuNmiBefore = lineCount;
-        } else {
-            _ppuNmiAfter = lineCount;
-        }
-    }
+		// Aspect Ratio
+		if(readVariable(MesenAspectRatio, var)) {
+			_selectedAspectRatio = std::string(var.value ? var.value : "");
+		}
 
-    // store overscan locally (EmuSettings API renamed)
-    _overscanLeft   = readOverscanValue(MesenOverscanLeft);
-    _overscanRight  = readOverscanValue(MesenOverscanRight);
-    _overscanTop    = readOverscanValue(MesenOverscanTop);
-    _overscanBottom = readOverscanValue(MesenOverscanBottom);
-
-/*		if(readVariable(MesenAspectRatio, var)) {
-			string value = string(var.value);
-			if(value == "Auto") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Auto, 1.0);
-			} else if(value == "No Stretching") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NoStretching, 1.0);
-			} else if(value == "NTSC") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NTSC, 1.0);
-			} else if(value == "PAL") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::PAL, 1.0);
-			} else if(value == "4:3") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Standard, 1.0);
-			} else if(value == "4:3 (Preserved)") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Standard, 1.0);
-			} else if(value == "16:9") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Widescreen, 1.0);
-			} else if(value == "16:9 (Preserved)") {
-				_emu->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Widescreen, 1.0);
-			}
-		}*/
-        if(readVariable(MesenAspectRatio, var)) {
-            // EmuSettings video aspect API changed; save selection locally for now.
-            _selectedAspectRatio = std::string(var.value ? var.value : "");
-        }
-
-/*		if(readVariable(MesenRegion, var)) {
-			string value = string(var.value);
-			if(value == "Auto") {
-				_emu->GetSettings()->SetNesModel(NesModel::Auto);
-			} else if(value == "NTSC") {
-				_emu->GetSettings()->SetNesModel(NesModel::NTSC);
-			} else if(value == "PAL") {
-				_emu->GetSettings()->SetNesModel(NesModel::PAL);
-			} else if(value == "Dendy") {
-				_emu->GetSettings()->SetNesModel(NesModel::Dendy);
-			}
-		}*/
-        if(readVariable(MesenRegion, var)) {
-            // EmuSettings NES model API changed; save locally until we map it.
-            _selectedRegion = std::string(var.value ? var.value : "");
-        }
-		
-/*		if(readVariable(MesenRamState, var)) {
-			string value = string(var.value);
-			if(value == "All 0s (Default)") {
-				_emu->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllZeros);
-			} else if(value == "All 1s") {
-				_emu->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllOnes);
-			} else if(value == "Random Values") {
-				_emu->GetSettings()->SetRamPowerOnState(RamPowerOnState::Random);
-			}
-		}*/
-        if(readVariable(MesenRamState, var)) {
-            // EmuSettings RAM power-on API changed; save selection locally.
-            _selectedRamState = std::string(var.value ? var.value : "");
-        }
-
+		// Screen Rotation
 		if(readVariable(MesenScreenRotation, var)) {
 			string value = string(var.value);
-/*			if(value == "None") {
-				_emu->GetSettings()->SetScreenRotation(0);
-			} else if(value == u8"90 degrees") {
-				_emu->GetSettings()->SetScreenRotation(90);
-			} else if(value == u8"180 degrees") {
-				_emu->GetSettings()->SetScreenRotation(180);
-			} else if(value == u8"270 degrees") {
-				_emu->GetSettings()->SetScreenRotation(270);
-			}*/
-			// EmuSettings ScreenRotation API changed — store locally for now.
-			if(value == "None") {
-				_screenRotation = 0;
-			} else if(value == u8"90 degrees") {
-				_screenRotation = 90;
-			} else if(value == u8"180 degrees") {
-				_screenRotation = 180;
-			} else if(value == u8"270 degrees") {
-				_screenRotation = 270;
+			if(value == "90 degrees") {
+				videoCfg.ScreenRotation = 90;
+			} else if(value == "180 degrees") {
+				videoCfg.ScreenRotation = 180;
+			} else if(value == "270 degrees") {
+				videoCfg.ScreenRotation = 270;
+			} else {
+				videoCfg.ScreenRotation = 0;
 			}
 		}
 
-		int turboSpeed = 0;
+		// PAL Borders
+		if(readVariable(MesenEnablePalBorders, var)) {
+			nesCfg.EnablePalBorders = (string(var.value) == "enabled");
+		}
+
+		// ===== AUDIO SETTINGS =====
+		
+		// Fake Stereo
+		if(readVariable(MesenFakeStereo, var)) {
+			nesCfg.StereoFilter = (string(var.value) == "enabled") ? StereoFilterType::Delay : StereoFilterType::None;
+		}
+
+		// Reduce Triangle Popping
+		if(readVariable(MesenMuteTriangleUltrasonic, var)) {
+			nesCfg.SilenceTriangleHighFreq = (string(var.value) == "enabled");
+		}
+
+		// Reduce DMC Popping
+		if(readVariable(MesenReduceDmcPopping, var)) {
+			nesCfg.ReduceDmcPopping = (string(var.value) == "enabled");
+		}
+
+		// Swap Duty Cycles
+		if(readVariable(MesenSwapDutyCycle, var)) {
+			nesCfg.SwapDutyCycles = (string(var.value) == "enabled");
+		}
+
+		// Disable Noise Mode Flag
+		if(readVariable(MesenDisableNoiseModeFlag, var)) {
+			nesCfg.DisableNoiseModeFlag = (string(var.value) == "enabled");
+		}
+
+		// Audio Sample Rate
+		if(readVariable(MesenAudioSampleRate, var)) {
+			int old_value = audioCfg.SampleRate;
+			audioCfg.SampleRate = atoi(var.value);
+			audioCfg.SampleRate = (audioCfg.SampleRate > 96000) ? 96000 : audioCfg.SampleRate;
+
+			if(old_value != audioCfg.SampleRate) {
+				// If core is running, notify frontend of geometry change
+				if(_saveStateSize != -1) {
+					struct retro_system_av_info system_av_info;
+					retro_get_system_av_info(&system_av_info);
+					env_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &system_av_info);
+				}
+			}
+		}
+
+		// ===== INPUT SETTINGS =====
+		
+		// Controller Turbo Speed
+		int turboSpeed = 1; // default to Normal
 		bool turboEnabled = true;
 		if(readVariable(MesenControllerTurboSpeed, var)) {
 			string value = string(var.value);
@@ -754,30 +874,10 @@ void libretro_probe_inputs(const char* tag)
 			}
 		}
 
+		// Shift Buttons Clockwise
 		_shiftButtonsClockwise = false;
 		if(readVariable(MesenShiftButtonsClockwise, var)) {
-			string value = string(var.value);
-			if(value == "enabled") {
-				_shiftButtonsClockwise = true;
- 			}
-		}
-
-		if(readVariable(MesenAudioSampleRate, var)) {
-			int old_value = _audioSampleRate;
-
-			_audioSampleRate = atoi(var.value);
-			_audioSampleRate = (_audioSampleRate > 96000) ? 96000 : _audioSampleRate;
-
-			if(old_value != _audioSampleRate) {
-				_emu->GetSettings()->GetAudioConfig().SampleRate = _audioSampleRate;
-
-				// switch when core actively running
-				if(_saveStateSize != -1) {
-					struct retro_system_av_info system_av_info;
-					retro_get_system_av_info(&system_av_info);
-					env_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &system_av_info);
-				}
-			}
+			_shiftButtonsClockwise = (string(var.value) == "enabled");
 		}
 
 		auto getKeyCode = [](int port, int retroKey) {
@@ -787,45 +887,112 @@ void libretro_probe_inputs(const char* tag)
 		auto getKeyBindings = [=](int port) {
 			KeyMappingSet keyMappings;
 			keyMappings.TurboSpeed = turboSpeed;
-			// Default NES-style mapping: A/B/start/select/dpad and optional turbo buttons
+			// Default NES-style mapping with optional clockwise shift
 			keyMappings.Mapping1.A = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_B : RETRO_DEVICE_ID_JOYPAD_A);
 			keyMappings.Mapping1.B = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_Y : RETRO_DEVICE_ID_JOYPAD_B);
 			if(turboEnabled) {
 				keyMappings.Mapping1.TurboA = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_A : RETRO_DEVICE_ID_JOYPAD_X);
 				keyMappings.Mapping1.TurboB = getKeyCode(port, _shiftButtonsClockwise ? RETRO_DEVICE_ID_JOYPAD_X : RETRO_DEVICE_ID_JOYPAD_Y);
 			}
-
 			keyMappings.Mapping1.Start = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_START);
 			keyMappings.Mapping1.Select = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_SELECT);
-
 			keyMappings.Mapping1.Up = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_UP);
 			keyMappings.Mapping1.Down = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_DOWN);
 			keyMappings.Mapping1.Left = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_LEFT);
 			keyMappings.Mapping1.Right = getKeyCode(port, RETRO_DEVICE_ID_JOYPAD_RIGHT);
-
-			// No special per-device arrays in the current KeyMapping struct; only populate core buttons
 			return keyMappings;
 		};
 
-		// Write the computed key mappings into the NesConfig so the core's control devices
-		// can query KeyManager::IsKeyPressed((port<<8)|(retroKey+1)).
-		NesConfig cfg = _emu->GetSettings()->GetNesConfig();
-		cfg.Port1.Keys = getKeyBindings(0);
-		cfg.Port2.Keys = getKeyBindings(1);
-		// Map subports/extra ports to the same base bindings where appropriate
-		cfg.Port1SubPorts[0].Keys = getKeyBindings(0);
-		cfg.Port1SubPorts[1].Keys = getKeyBindings(1);
-		cfg.Port1SubPorts[2].Keys = getKeyBindings(2);
-		cfg.Port1SubPorts[3].Keys = getKeyBindings(3);
-		cfg.ExpPort.Keys = getKeyBindings(4);
-		_emu->GetSettings()->SetNesConfig(cfg);
-		// Controller key mapping API changed. Skip populating controller key maps here.
-		// TODO: re-map controller keys using new KeyMapping/ControllerType API.
+		nesCfg.Port1.Keys = getKeyBindings(0);
+		nesCfg.Port2.Keys = getKeyBindings(1);
+		nesCfg.Port1SubPorts[0].Keys = getKeyBindings(0);
+		nesCfg.Port1SubPorts[1].Keys = getKeyBindings(1);
+		nesCfg.Port1SubPorts[2].Keys = getKeyBindings(2);
+		nesCfg.Port1SubPorts[3].Keys = getKeyBindings(3);
+		nesCfg.ExpPort.Keys = getKeyBindings(4);
 
-retro_system_av_info avInfo = {};
-		// Use the exported helper which already knows how to compute system AV info.
-		retro_get_system_av_info(&avInfo);
-		env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+		// ===== ENHANCEMENTS =====
+		
+		// HD Packs
+		_hdPacksEnabled = true;
+		if(readVariable(MesenHdPacks, var)) {
+			_hdPacksEnabled = (string(var.value) != "disabled");
+		}
+		nesCfg.EnableHdPacks = _hdPacksEnabled;
+
+		// Sprite Limit (3-choice: normal, adaptive, off)
+		nesCfg.RemoveSpriteLimit = false;
+		nesCfg.AdaptiveSpriteLimit = false;
+		if(readVariable(MesenSpriteLimit, var)) {
+			string value = string(var.value);
+			if(value == "adaptive") {
+				nesCfg.AdaptiveSpriteLimit = true;
+			} else if(value == "off") {
+				nesCfg.RemoveSpriteLimit = true;
+			}
+		}
+
+		// Sprites Enabled
+		if(readVariable(MesenSpritesEnabled, var)) {
+			nesCfg.SpritesEnabled = (string(var.value) == "enabled");
+		}
+
+		// Background Enabled
+		if(readVariable(MesenBackgroundEnabled, var)) {
+			nesCfg.BackgroundEnabled = (string(var.value) == "enabled");
+		}
+
+		// Disable Game Genie Bus Conflicts
+		if(readVariable(MesenDisableGameGenieBusConflicts, var)) {
+			nesCfg.DisableGameGenieBusConflicts = (string(var.value) == "enabled");
+		}
+
+		// ===== SYSTEM OPTIONS =====
+
+		// Allow Invalid Input
+		if(readVariable(MesenAllowInvalidInput, var)) {
+			nesCfg.AllowInvalidInput = (string(var.value) == "enabled");
+		}
+
+		// Randomize Mapper Power-On State
+		if(readVariable(MesenRandomizeMapperPowerOnState, var)) {
+			nesCfg.RandomizeMapperPowerOnState = (string(var.value) == "enabled");
+		}
+
+		// Randomize CPU/PPU Alignment
+		if(readVariable(MesenRandomizeCpuPpuAlignment, var)) {
+			nesCfg.RandomizeCpuPpuAlignment = (string(var.value) == "enabled");
+		}
+
+		// ===== APPLY ALL SETTINGS =====
+		
+		_emu->GetSettings()->SetNesConfig(nesCfg);
+		_emu->GetSettings()->SetVideoConfig(videoCfg);
+		_emu->GetSettings()->SetAudioConfig(audioCfg);
+
+		// Check if geometry-related settings changed
+		bool videoFilterChanged = (_lastVideoConfig.VideoFilter != videoCfg.VideoFilter) ||
+			(_lastVideoConfig.NtscScale != videoCfg.NtscScale) ||
+			(_lastVideoConfig.ScreenRotation != videoCfg.ScreenRotation);
+		bool overscanChanged = (nesCfg.NtscOverscan.Left != _lastNesConfig.NtscOverscan.Left) ||
+			(nesCfg.NtscOverscan.Right != _lastNesConfig.NtscOverscan.Right) ||
+			(nesCfg.NtscOverscan.Top != _lastNesConfig.NtscOverscan.Top) ||
+			(nesCfg.NtscOverscan.Bottom != _lastNesConfig.NtscOverscan.Bottom) ||
+			(nesCfg.PalOverscan.Left != _lastNesConfig.PalOverscan.Left) ||
+			(nesCfg.PalOverscan.Right != _lastNesConfig.PalOverscan.Right) ||
+			(nesCfg.PalOverscan.Top != _lastNesConfig.PalOverscan.Top) ||
+			(nesCfg.PalOverscan.Bottom != _lastNesConfig.PalOverscan.Bottom);
+
+		if(videoFilterChanged || overscanChanged) {
+			_geometryDirty = true;
+			if(_emu && _emu->GetVideoDecoder()) {
+				_emu->GetVideoDecoder()->ForceFilterUpdate();
+			}
+		}
+
+		// Save current settings for next comparison
+		_lastVideoConfig = videoCfg;
+		_lastNesConfig = nesCfg;
 	}
 
 	RETRO_API void retro_run()
@@ -933,10 +1100,22 @@ retro_system_av_info avInfo = {};
 		}
 
 		if(updated) {
-			//Update geometry after running the frame, in case the emulator's region changed
-			retro_system_av_info avInfo = {};
-			retro_get_system_av_info(&avInfo);
-			env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+			// Only update geometry if something changed or if flag is set
+			if(_geometryDirty) {
+				retro_system_av_info avInfo = {};
+				retro_get_system_av_info(&avInfo);
+				uint32_t newWidth = avInfo.geometry.base_width;
+				uint32_t newHeight = avInfo.geometry.base_height;
+				
+				// Only call SET_GEOMETRY if dimensions actually changed
+				if(newWidth != _lastReportedWidth || newHeight != _lastReportedHeight) {
+					_lastReportedWidth = newWidth;
+					_lastReportedHeight = newHeight;
+					env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+					fprintf(stderr, "[libretro] Geometry updated: %ux%u\n", newWidth, newHeight);
+				}
+				_geometryDirty = false;
+			}
 		}
 
 		// Audio upload handled by emulator/sound subsystem; no-op here for now.
@@ -1520,13 +1699,23 @@ retro_system_av_info avInfo = {};
 			romData = VirtualFile(gamePath);
 		}
 
+		// Set HD pack configuration BEFORE loading ROM (LoadHdPack checks this during ROM load)
+		{
+			NesConfig nesCfg = _emu->GetSettings()->GetNesConfig();
+			nesCfg.EnableHdPacks = _hdPacksEnabled;
+			_emu->GetSettings()->SetNesConfig(nesCfg);
+		}
+
 		// Attempt to load the ROM via the Emulator API
 		bool result = false;
 		try {
 			// Do not instruct the emulator to stop any existing ROM here - letting it avoid
 			// the Stop() path which can trigger complex shutdown behavior inside a libretro host.
+			fprintf(stderr, "[libretro] Loading ROM: %s (HD packs %s)\n", gamePath.c_str(), _hdPacksEnabled ? "enabled" : "disabled");
 			result = _emu->LoadRom(romData, VirtualFile(), false, false);
+			fprintf(stderr, "[libretro] ROM load result: %s\n", result ? "SUCCESS" : "FAILED");
 		} catch(...) {
+			fprintf(stderr, "[libretro] Exception during ROM load\n");
 			result = false;
 		}
 
@@ -1577,7 +1766,20 @@ retro_system_av_info avInfo = {};
 
 			// Register the libretro audio device now that the emulator is initialized and consoles are ready
 			if(_audioDevice && _emu && _emu->GetSoundMixer()) {
+				fprintf(stderr, "[libretro] Registering audio device with SoundMixer\n");
 				_emu->GetSoundMixer()->RegisterAudioDevice(_audioDevice.get());
+				fprintf(stderr, "[libretro] Audio device registered successfully\n");
+			} else {
+				fprintf(stderr, "[libretro] WARNING: Cannot register audio device - _audioDevice=%p, _emu=%p, mixer=%p\n",
+					_audioDevice.get(), _emu.get(), _emu ? _emu->GetSoundMixer() : nullptr);
+			}
+
+			// Update geometry if HD packs are loaded (they may change the resolution)
+			if(_console && _console->GetHdData()) {
+				fprintf(stderr, "[libretro] HD pack detected - updating geometry\n");
+				retro_system_av_info avInfo = {};
+				retro_get_system_av_info(&avInfo);
+				env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
 			}
 
 			// Forward any saved input callbacks into the key manager now that console/key manager are initialized.
@@ -1642,37 +1844,45 @@ retro_system_av_info avInfo = {};
 
 	RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
 	{
-	/*	uint32_t hscale = 1;
-		uint32_t vscale = 1;
-		switch(_console->GetSettings()->GetVideoFilterType()) {
-			case VideoFilterType::NTSC: hscale = 2; break;
-			case VideoFilterType::BisqwitNtscQuarterRes: hscale = 2; break;
-			case VideoFilterType::BisqwitNtscHalfRes: hscale = 4; break;
-			case VideoFilterType::BisqwitNtsc: hscale = 8; break;
-			default: hscale = 1; break;
+		memset(info, 0, sizeof(*info));
+		
+		uint32_t width = 256;
+		uint32_t height = 240;
+		
+		// Get actual filtered frame size if available
+		if(_emu && _emu->GetVideoDecoder()) {
+			FrameInfo frameSize = _emu->GetVideoDecoder()->GetFrameInfo();
+			width = frameSize.Width;
+			height = frameSize.Height;
 		}
 		
-		shared_ptr<HdPackData> hdData = _console->GetHdData();
-		if(hdData) {
-			hscale = hdData->Scale;
-			vscale = hdData->Scale;
+		// Check if HD packs are loaded and apply additional scaling
+		uint32_t hscale = 1;
+		uint32_t vscale = 1;
+		
+		if(_console) {
+			auto hdData = _console->GetHdData().lock();
+			if(hdData) {
+				hscale = hdData->Scale;
+				vscale = hdData->Scale;
+				fprintf(stderr, "[libretro] HD pack detected: scale = %u\n", hscale);
+			}
 		}
-
-		if(hscale <= 2)
-			_console->GetVideoRenderer()->GetSystemAudioVideoInfo(*info, NES_NTSC_OUT_WIDTH(256), 240 * vscale);
-		else
-			_console->GetVideoRenderer()->GetSystemAudioVideoInfo(*info, 256 * hscale, 240 * vscale);
-	
-	*/
-    memset(info, 0, sizeof(*info));
-    // Provide safe NTSC defaults; update when real video API is available
-    info->geometry.base_width = 256;
-    info->geometry.base_height = 240;
-    info->geometry.max_width = 256 * 8; // generous max
-    info->geometry.max_height = 240 * 8;
-    info->geometry.aspect_ratio = 4.0f / 3.0f;
-    info->timing.fps = 60.0988;
-    info->timing.sample_rate = 44100.0;
+		
+		// Apply HD scale to final dimensions
+		width *= hscale;
+		height *= vscale;
+		
+		info->geometry.base_width = width;
+		info->geometry.base_height = height;
+		info->geometry.max_width = 256 * 8 * 4; // generous max (8x scale + 4x HD)
+		info->geometry.max_height = 240 * 8 * 4;
+		info->geometry.aspect_ratio = 4.0f / 3.0f;
+		info->timing.fps = 60.0988;
+		info->timing.sample_rate = 44100.0;
+		
+		fprintf(stderr, "[libretro] AV info: %ux%u (aspect %.2f, fps %.4f)\n", 
+			width, height, info->geometry.aspect_ratio, info->timing.fps);
 	}
 
 	RETRO_API void *retro_get_memory_data(unsigned id)
@@ -1701,7 +1911,6 @@ retro_system_av_info avInfo = {};
 
 	RETRO_API size_t retro_get_memory_size(unsigned id)
 	{
-		BaseMapper* mapper = _console->GetMapper();
 		switch(id) {
 			case RETRO_MEMORY_SAVE_RAM: //return mapper->GetMemorySize(DebugMemoryType::SaveRam);
 			   // Mapper API changed; save-RAM access moved. Return 0 for now.

@@ -26,7 +26,12 @@ HdAudioDevice::HdAudioDevice(Emulator* emu, HdPackData* hdData)
 
 HdAudioDevice::~HdAudioDevice()
 {
-	_emu->GetSoundMixer()->UnregisterAudioProvider(_oggMixer.get());
+	if(_emu && _oggMixer) {
+		auto mixer = _emu->GetSoundMixer();
+		if(mixer) {
+			mixer->UnregisterAudioProvider(_oggMixer.get());
+		}
+	}
 }
 
 void HdAudioDevice::Serialize(Serializer& s)
