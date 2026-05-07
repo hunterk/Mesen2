@@ -155,24 +155,24 @@ static constexpr const char* MesenRandomizeMapperPowerOnState = "mesen_randomize
 static constexpr const char* MesenRandomizeCpuPpuAlignment = "mesen_randomize_cpu_ppu_alignment";
 static constexpr const char* MesenOverclock = "mesen_overclock";
 static constexpr const char* MesenOverclockType = "mesen_overclock_type";
-static constexpr const char* MesenOverscanLeft = "mesen_overscan_left";
-static constexpr const char* MesenOverscanRight = "mesen_overscan_right";
-static constexpr const char* MesenOverscanTop = "mesen_overscan_up";
-static constexpr const char* MesenOverscanBottom = "mesen_overscan_down";
-static constexpr const char* MesenAspectRatio = "mesen_aspect_ratio";
+//static constexpr const char* MesenOverscanLeft = "mesen_overscan_left";
+//static constexpr const char* MesenOverscanRight = "mesen_overscan_right";
+//static constexpr const char* MesenOverscanTop = "mesen_overscan_up";
+//static constexpr const char* MesenOverscanBottom = "mesen_overscan_down";
+//static constexpr const char* MesenAspectRatio = "mesen_aspect_ratio";
 static constexpr const char* MesenRegion = "mesen_region";
 static constexpr const char* MesenRamState = "mesen_ramstate";
 static constexpr const char* MesenControllerTurboSpeed = "mesen_controllerturbospeed";
 static constexpr const char* MesenFdsAutoSelectDisk = "mesen_fdsautoinsertdisk";
 static constexpr const char* MesenFdsFastForwardLoad = "mesen_fdsfastforwardload";
-static constexpr const char* MesenHdPacks = "mesen_hdpacks";
-static constexpr const char* MesenScreenRotation = "mesen_screenrotation";
+// static constexpr const char* MesenHdPacks = "mesen_hdpacks";
+// static constexpr const char* MesenScreenRotation = "mesen_screenrotation";
 static constexpr const char* MesenFakeStereo = "mesen_fake_stereo";
 static constexpr const char* MesenMuteTriangleUltrasonic = "mesen_mute_triangle_ultrasonic";
 static constexpr const char* MesenReduceDmcPopping = "mesen_reduce_dmc_popping";
 static constexpr const char* MesenSwapDutyCycle = "mesen_swap_duty_cycle";
 static constexpr const char* MesenDisableNoiseModeFlag = "mesen_disable_noise_mode_flag";
-static constexpr const char* MesenShiftButtonsClockwise = "mesen_shift_buttons_clockwise";
+// static constexpr const char* MesenShiftButtonsClockwise = "mesen_shift_buttons_clockwise";
 static constexpr const char* MesenAudioSampleRate = "mesen_audio_sample_rate";
 
 uint32_t defaultPalette[0x40] { 0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4, 0xFF5C007E, 0xFF6E0040, 0xFF6C0600, 0xFF561D00, 0xFF333500, 0xFF0B4800, 0xFF005200, 0xFF004F08, 0xFF00404D, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFADADAD, 0xFF155FD9, 0xFF4240FF, 0xFF7527FE, 0xFFA01ACC, 0xFFB71E7B, 0xFFB53120, 0xFF994E00, 0xFF6B6D00, 0xFF388700, 0xFF0C9300, 0xFF008F32, 0xFF007C8D, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFEFF, 0xFF64B0FF, 0xFF9290FF, 0xFFC676FF, 0xFFF36AFF, 0xFFFE6ECC, 0xFFFE8170, 0xFFEA9E22, 0xFFBCBE00, 0xFF88D800, 0xFF5CE430, 0xFF45E082, 0xFF48CDDE, 0xFF4F4F4F, 0xFF000000, 0xFF000000, 0xFFFFFEFF, 0xFFC0DFFF, 0xFFD3D2FF, 0xFFE8C8FF, 0xFFFBC2FF, 0xFFFEC4EA, 0xFFFECCC5, 0xFFF7D8A5, 0xFFE4E594, 0xFFCFEF96, 0xFFBDF4AB, 0xFFB3F3CC, 0xFFB5EBF2, 0xFFB8B8B8, 0xFF000000, 0xFF000000 };
@@ -326,12 +326,15 @@ extern "C" {
 
 			// Video category
 			{ MesenPalette, "Video - Palette", "Palette", "Select color palette", NULL, "video",
-				{{ "Default", "Default" }, { "Composite Direct (by FirebrandX)", "Composite Direct" }, { "Nes Classic", "NES Classic" }, { "Nestopia (RGB)", "Nestopia RGB" }, { "Original Hardware (by FirebrandX)", "Original Hardware" }, { "PVM Style (by FirebrandX)", "PVM Style" }, { "Sony CXA2025AS", "Sony CXA2025AS" }, { "Unsaturated v6 (by FirebrandX)", "Unsaturated v6" }, { "YUV v3 (by FirebrandX)", "YUV v3" }, { "Wavebeam (by nakedarthur)", "Wavebeam" }, { "Custom", "Custom" }, { "Raw", "Raw" }, { NULL, NULL }},
-				"Default" },
+			// TODO:FIXME RAW palette doesn't work
+				{{ "Default", "Default" }, { "Composite Direct (by FirebrandX)", }, { "Nes Classic", "NES Classic" }, { "Nestopia (RGB)", "Nestopia RGB" }, { "Original Hardware (by FirebrandX)", "Original Hardware" }, { "PVM Style (by FirebrandX)", "PVM Style" }, { "Sony CXA2025AS", "Sony CXA2025AS" }, { "Unsaturated v6 (by FirebrandX)", "Unsaturated v6" }, { "YUV v3 (by FirebrandX)", "YUV v3" }, { "Wavebeam (by nakedarthur)", "Wavebeam" }, { "Custom", "Custom" }, /*{ "Raw", "Raw" },*/ { NULL, NULL }},
+				"Default" },	
+			// TODO:FIXME the commented NTSC filters don't work	
 			{ MesenNtscFilter, "Video - NTSC Filter", "NTSC Filter", "NTSC video filter", NULL, "video",
-				{{ "Disabled", "Disabled" }, { "Composite (Blargg)", "Composite (Blargg)" }, { "S-Video (Blargg)", "S-Video (Blargg)" }, { "RGB (Blargg)", "RGB (Blargg)" }, { "Monochrome (Blargg)", "Monochrome (Blargg)" }, { "Bisqwit 2x", "Bisqwit 2x" }, { "Bisqwit 4x", "Bisqwit 4x" }, { "Bisqwit 8x", "Bisqwit 8x" }, { NULL, NULL }},
+				{{ "Disabled", "Disabled" }, { "Composite (Blargg)", "Composite (Blargg)" }, /*{ "S-Video (Blargg)", "S-Video (Blargg)" }, { "RGB (Blargg)", "RGB (Blargg)" }, { "Monochrome (Blargg)", "Monochrome (Blargg)" }, { "Bisqwit 2x", "Bisqwit 2x" }, { "Bisqwit 4x", "Bisqwit 4x" }, { "Bisqwit 8x", "Bisqwit 8x" },*/ { NULL, NULL }},
 				"Disabled" },
-			{ MesenOverscanLeft, "Video - Overscan Left", "Overscan Left", "Left overscan", NULL, "video",
+		   // TODO:FIXME overscan cropping and AR options don't work
+/*			{ MesenOverscanLeft, "Video - Overscan Left", "Overscan Left", "Left overscan", NULL, "video",
 				{{ "None", "None" }, { "4px", "4px" }, { "8px", "8px" }, { "12px", "12px" }, { "16px", "16px" }, { NULL, NULL }},
 				"None" },
 			{ MesenOverscanRight, "Video - Overscan Right", "Overscan Right", "Right overscan", NULL, "video",
@@ -349,6 +352,7 @@ extern "C" {
 			{ MesenScreenRotation, "Video - Screen Rotation", "Screen Rotation", "Rotate screen display", NULL, "video",
 				{{ "None", "None" }, { "90 degrees", "90 degrees" }, { "180 degrees", "180 degrees" }, { "270 degrees", "270 degrees" }, { NULL, NULL }},
 				"None" },
+			*/
 			{ MesenEnablePalBorders, "Video - Enable PAL Borders", "PAL Borders", "Show borders in PAL mode", NULL, "video",
 				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
 				"disabled" },
@@ -377,9 +381,11 @@ extern "C" {
 			{ MesenControllerTurboSpeed, "Input - Controller Turbo Speed", "Turbo Speed", "Turbo button speed", NULL, "input",
 				{{ "Fast", "Fast" }, { "Very Fast", "Very Fast" }, { "Disabled", "Disabled" }, { "Slow", "Slow" }, { "Normal", "Normal" }, { NULL, NULL }},
 				"Normal" },
+			/*
 			{ MesenShiftButtonsClockwise, "Input - Shift Buttons Clockwise", "Shift Buttons", "Shift A/B/X/Y buttons clockwise", NULL, "input",
 				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
 				"disabled" },
+			*/
 
 			// Enhancements category (additional options)
 			{ MesenSpritesEnabled, "Enhancements - Sprites Enabled", "Sprites Enabled", "Enable sprite rendering", NULL, "enhancements",
@@ -392,10 +398,12 @@ extern "C" {
 				{{ "disabled", "Off" }, { "enabled", "On" }, { NULL, NULL }},
 				"disabled" },
 
+			/*
 			// Enhancements category
 			{ MesenHdPacks, "Enhancements - HD Packs", "HD Packs", "Enable HD graphics packs", NULL, "enhancements",
 				{{ "enabled", "On" }, { "disabled", "Off" }, { NULL, NULL }},
 				"enabled" },
+			*/
 			{ MesenSpriteLimit, "Enhancements - Sprite Limit", "Sprite Limit", "8-sprite scanline limit", NULL, "enhancements",
 				{{ "normal", "Normal" }, { "adaptive", "Adaptive" }, { "off", "Off" }, { NULL, NULL }},
 				"normal" },
@@ -721,20 +729,21 @@ void libretro_probe_inputs(const char* tag)
 				load_custom_palette();
 			} else if(value == "Raw") {
 				_videoFilterRaw = true;
+				// For raw mode, use the default palette
+				_userRgbPalette.assign(std::begin(defaultPalette), std::end(defaultPalette));
 			}
 		}
 
-		// Copy palette into NesConfig (skip if raw mode is enabled)
-		if(!_videoFilterRaw) {
-			if(_userRgbPalette.size() >= 512) {
-				for(size_t i = 0; i < 512; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
-				nesCfg.IsFullColorPalette = true;
-			} else {
-				for(size_t i = 0; i < 64; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
-				nesCfg.IsFullColorPalette = false;
-			}
+		// Copy palette into NesConfig
+		if(_userRgbPalette.size() >= 512) {
+			for(size_t i = 0; i < 512; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
+			nesCfg.IsFullColorPalette = true;
+		} else {
+			for(size_t i = 0; i < 64; ++i) nesCfg.UserPalette[i] = (i < _userRgbPalette.size()) ? _userRgbPalette[i] : 0xFF000000;
+			nesCfg.IsFullColorPalette = false;
 		}
 
+		
 		// NTSC Filter - map string selection to VideoFilterType enum and apply settings
 		if(readVariable(MesenNtscFilter, var)) {
 			string filterValue = string(var.value);
@@ -743,7 +752,7 @@ void libretro_probe_inputs(const char* tag)
 			} else if(filterValue == "Composite (Blargg)") {
 				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
 				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Composite;
-			} else if(filterValue == "S-Video (Blargg)") {
+			}/* else if(filterValue == "S-Video (Blargg)") {
 				videoCfg.VideoFilter = VideoFilterType::NtscBlargg;
 				videoCfg.NtscBlarggPreset_Value = NtscBlarggPreset::Svideo;
 			} else if(filterValue == "RGB (Blargg)") {
@@ -761,9 +770,9 @@ void libretro_probe_inputs(const char* tag)
 			} else if(filterValue == "Bisqwit 8x") {
 				videoCfg.VideoFilter = VideoFilterType::NtscBisqwit;
 				videoCfg.NtscScale = NtscBisqwitFilterScale::_8x;
-			}
+			}*/
 		}
-
+/*
 		// Overscan
 		nesCfg.NtscOverscan.Left = readOverscanValue(MesenOverscanLeft);
 		nesCfg.NtscOverscan.Right = readOverscanValue(MesenOverscanRight);
@@ -777,6 +786,7 @@ void libretro_probe_inputs(const char* tag)
 			_selectedAspectRatio = std::string(var.value ? var.value : "");
 		}
 
+		
 		// Screen Rotation
 		if(readVariable(MesenScreenRotation, var)) {
 			string value = string(var.value);
@@ -790,6 +800,7 @@ void libretro_probe_inputs(const char* tag)
 				videoCfg.ScreenRotation = 0;
 			}
 		}
+*/
 
 		// PAL Borders
 		if(readVariable(MesenEnablePalBorders, var)) {
@@ -859,11 +870,13 @@ void libretro_probe_inputs(const char* tag)
 			}
 		}
 
+/*
 		// Shift Buttons Clockwise
 		_shiftButtonsClockwise = false;
 		if(readVariable(MesenShiftButtonsClockwise, var)) {
 			_shiftButtonsClockwise = (string(var.value) == "enabled");
 		}
+*/
 
 		auto getKeyCode = [](int port, int retroKey) {
 			return (port << 8) | (retroKey + 1);
@@ -898,11 +911,16 @@ void libretro_probe_inputs(const char* tag)
 
 		// ===== ENHANCEMENTS =====
 		
+		/*
 		// HD Packs
 		_hdPacksEnabled = true;
 		if(readVariable(MesenHdPacks, var)) {
 			_hdPacksEnabled = (string(var.value) != "disabled");
 		}
+		nesCfg.EnableHdPacks = _hdPacksEnabled;
+		*/
+		// HD packs disabled - not working properly
+		_hdPacksEnabled = false;
 		nesCfg.EnableHdPacks = _hdPacksEnabled;
 
 		// Sprite Limit (3-choice: normal, adaptive, off)
@@ -1253,12 +1271,20 @@ void libretro_probe_inputs(const char* tag)
         addDesc(port, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right");
         addDesc(port, RETRO_DEVICE_ID_JOYPAD_A, "A");
         addDesc(port, RETRO_DEVICE_ID_JOYPAD_B, "B");
-        addDesc(port, RETRO_DEVICE_ID_JOYPAD_X, "X");
-        addDesc(port, RETRO_DEVICE_ID_JOYPAD_Y, "Y");
-        addDesc(port, RETRO_DEVICE_ID_JOYPAD_L, "L");
-        addDesc(port, RETRO_DEVICE_ID_JOYPAD_R, "R");
+        addDesc(port, RETRO_DEVICE_ID_JOYPAD_X, "Turbo A");
+        addDesc(port, RETRO_DEVICE_ID_JOYPAD_Y, "Turbo B");
+//        addDesc(port, RETRO_DEVICE_ID_JOYPAD_L, "L");
+//        addDesc(port, RETRO_DEVICE_ID_JOYPAD_R, "R");
         addDesc(port, RETRO_DEVICE_ID_JOYPAD_START, "Start");
         addDesc(port, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select");
+
+        if(port == 0) {
+           addDesc(port, RETRO_DEVICE_ID_JOYPAD_L, "(FDS) Insert Next Disk");
+           addDesc(port, RETRO_DEVICE_ID_JOYPAD_R, "(FDS) Switch Disk Side");
+           addDesc(port, RETRO_DEVICE_ID_JOYPAD_L2, "(VS) Insert Coin 1");
+           addDesc(port, RETRO_DEVICE_ID_JOYPAD_R2, "(VS) Insert Coin 2");
+           addDesc(port, RETRO_DEVICE_ID_JOYPAD_L3, "(Famicom) Microphone (P2)");
+		  }
     };
 /*			if(device == DEVICE_AUTO) {
 				if(port <= 3) {

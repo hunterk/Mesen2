@@ -213,6 +213,10 @@ ui: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 
 core: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 
+# Build libretro core independently - use from top-level: make libretro
+libretro: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
+	@echo "Libretro core built successfully: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)"
+
 pgohelper: InteropDLL/$(OBJFOLDER)/$(SHAREDLIB)
 	mkdir -p PGOHelper/$(OBJFOLDER) && cd PGOHelper/$(OBJFOLDER) && $(CXX) $(CXXFLAGS) $(LINKCHECKUNRESOLVED) -o pgohelper ../PGOHelper.cpp ../../bin/pgohelperlib.so -pthread $(FSLIB) $(SDL2LIB) $(LIBEVDEVLIB) $(X11LIB)
 
